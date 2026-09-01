@@ -13,9 +13,11 @@ Agents burn ~80% of their time and context reading the web through raw `curl`
   Markdown or JSON. Cheap HTTP fetch first; on detected failure escalates to
   the user's **real logged-in Chrome** via [OpenCLI](https://opencli.com)
   (Cloudflare already passed, sessions alive), then to network JSON capture.
-- **`smart-search`** (skill) — search router with a hard budget: max **1 AI
-  source + 1–2 vertical sources** per question, no engine re-spam, mandatory
-  Search Balance report at the end of every answer.
+- **`smart-search`** (skill) — search discipline for agents that already have
+  native search: direct routes only (native search → `swr` → say what
+  failed), hard budget of max **3 real calls** per question, no engine
+  re-spam, mandatory Search Balance report at the end of every answer.
+  No "ask another AI" middlemen.
 
 ## Install (macOS / Linux)
 
@@ -119,7 +121,7 @@ Configuration via env: `SWR_TOTAL_BUDGET` (seconds, default 45),
 ## Skills
 
 - [`skills/smart-web-read/SKILL.md`](skills/smart-web-read/SKILL.md) — teaches the agent to *always* use `swr` for URLs.
-- [`skills/smart-search/SKILL.md`](skills/smart-search/SKILL.md) — EN/RU search routing with budget enforcement.
+- [`skills/smart-search/SKILL.md`](skills/smart-search/SKILL.md) — EN/RU search discipline: direct routes, budget enforcement, balance report.
 
 ## License
 
