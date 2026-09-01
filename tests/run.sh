@@ -66,7 +66,8 @@ r "http://10.255.255.1/x"
   [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ];   check "unreachable -> err, empty" 1 "$(is && echo 1 || echo 0)"
 
 mkdir -p "$TMP/proj" && ( cd "$TMP/proj" && "$SWR" init ) >/dev/null 2>&1
-  [ -f "$TMP/proj/.agents/skills/smart-web-read/SKILL.md" ]; check "swr init -> SKILL.md     " 1 "$(is && echo 1 || echo 0)"
+  [ -f "$TMP/proj/.agents/skills/smart-web-read/SKILL.md" ]; check "swr init -> .agents   " 1 "$(is && echo 1 || echo 0)"
+  [ -f "$TMP/proj/.claude/skills/smart-web-read/SKILL.md" ]; check "swr init -> .claude   " 1 "$(is && echo 1 || echo 0)"
 
 echo "---"
 echo "pass=$pass fail=$fail"

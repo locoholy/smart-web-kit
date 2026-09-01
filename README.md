@@ -38,8 +38,8 @@ npm install -g .          # provides the `swr` binary (L1 works immediately)
 Then, inside any project an AI agent will work on, wire the agent to `swr`:
 
 ```bash
-swr init                 # drops skills/smart-web-read/SKILL.md into ./.agents/skills
-swr init --claude        # same, but into ./.claude/skills for Claude
+swr init                 # SKILL.md → ./.agents/skills AND ./.claude/skills (one command, both)
+swr init --global        # same, into ~/.agents/skills + ~/.claude/skills — wires ALL projects on this machine
 swr doctor               # "ready" / "not-ready" + exactly what to install for Chrome escalation
 ```
 

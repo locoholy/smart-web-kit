@@ -21,7 +21,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const L1_TIMEOUT = parseInt(process.env.SWR_L1_TIMEOUT || '5', 10);
 const OPEN_TIMEOUT = 20;
@@ -94,20 +94,29 @@ for (const a of args) {
 if (!url) { usage(); process.exit(2); }
 try { url = new URL(url).href; } catch { tErr('invalid URL: ' + url); process.exit(2); }
 
-function usage() { process.stderr.write('usage: swr [--json] <url> | swr init [--claude] | swr doctor\n'); }
+function usage() { process.stderr.write('usage: swr [--json] <url> | swr init [--global] [--claude] | swr doctor\n'); }
 function tErr(m) { process.stderr.write(`[SWR] ${m}\n`); }
 
 function cmdInit() {
   const flags = args.slice(1);
-  const toClaude = flags.includes('--claude');
-  const dir = toClaude ? path.join('.claude', 'skills') : path.join('.agents', 'skills');
-  const skillDir = path.join(dir, 'smart-web-read');
-  fs.mkdirSync(skillDir, { recursive: true });
-  fs.writeFileSync(path.join(skillDir, 'SKILL.md'), INIT_SKILL);
-  tErr('init: wrote SKILL.md → ' + path.join(skillDir, 'SKILL.md'));
-  tErr('init: ' + (toClaude
-    ? 'Claude picks it up from ./.claude/skills'
-    : 'Codex / Agent-Skills CLIs pick it up from ./.agents/skills'));
+  const global = flags.includes('--global');
+  // One command → every Agent-Skills-capable CLI picks the skill up:
+  // project mode: ./.agents/skills (Codex/Cline/etc) + ./.claude/skills (Claude)
+  // global mode:  ~/.agents/skills + ~/.claude/skills
+  const roots = global
+    ? [path.join(process.env.HOME || '', '.agents'), path.join(process.env.HOME || '', '.claude')]
+    : [process.cwd(), process.cwd()];
+  const subdirs = global ? ['skills', 'skills'] : ['.agents/skills', '.claude/skills'];
+  let written = 0;
+  for (let i = 0; i < roots.length; i++) {
+    const skillDir = path.join(roots[i], subdirs[i], 'smart-web-read');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), INIT_SKILL);
+    tErr('init: wrote SKILL.md → ' + skillDir + '/SKILL.md');
+    written++;
+  }
+  tErr('init: done — ' + (global ? 'global (~/.agents/skills, ~/.claude/skills)' : 'project (./.agents/skills, ./.claude/skills)') + '; any Agent-Skills CLI picks it up');
+  if (!global) tErr('init: tip — run `swr init --global` once to wire ALL projects on this machine');
 }
 
 function cmdDoctor() {
