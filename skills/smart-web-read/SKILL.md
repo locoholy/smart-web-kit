@@ -7,7 +7,7 @@ description: >-
   the user's real logged-in Chrome via opencli, then to network JSON capture.
   stdout is ALWAYS clean Markdown or JSON. Triggers: "read this url",
   "open the docs", "what does this page say", "прочитай страницу",
-  "открой ссылку". NOT for search (use smart-search), NOT for browser forms.
+  "открой ссылку". NOT for search (use swr-search), NOT for browser forms.
 allowed-tools: Bash(swr:*), Bash(opencli:*), Read
 ---
 

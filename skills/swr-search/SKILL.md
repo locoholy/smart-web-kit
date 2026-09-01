@@ -1,5 +1,5 @@
 ---
-name: smart-search
+name: swr-search
 description: >-
   Use when the user wants to SEARCH, LOOK UP, RESEARCH or FIND information:
   "search for", "find out", "look up", "research", "what's the latest on",
@@ -13,7 +13,7 @@ description: >-
   automation.
 ---
 
-# smart-search — direct routes only, spend the budget, report the balance
+# swr-search — direct routes only, spend the budget, report the balance
 
 ## Route map (in escalation order — never skip a level)
 
