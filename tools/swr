@@ -1,0 +1,299 @@
+#!/usr/bin/env node
+'use strict';
+/*
+ * swr — Smart Web Read. Escalation ladder for AI agents:
+ *   L1: plain HTTP fetch (curl, browser headers, 5s)
+ *   L2: opencli browser <session> open/extract — real logged-in Chrome
+ *   L3: opencli browser <session> network — API JSON capture (empty-SPA case)
+ *
+ * stdout: clean Markdown (default) or JSON envelope (--json) — nothing else.
+ * stderr: one-line telemetry events.
+ *
+ * Exit codes: 0 ok | 1 gave up | 2 usage | 3 timeout/busy | 4 opencli missing
+ *
+ * Zero npm dependencies. Requires node >= 18. Config:
+ *   SWR_TOTAL_BUDGET  total seconds budget (default 45)
+ *   SWR_L1_TIMEOUT    L1 curl timeout seconds (default 5)
+ */
+const { spawnSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+
+const VERSION = '1.0.0';
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+const L1_TIMEOUT = parseInt(process.env.SWR_L1_TIMEOUT || '5', 10);
+const OPEN_TIMEOUT = 20;
+const EXTRACT_TIMEOUT = 20;
+const NETWORK_TIMEOUT = 15;
+const LOCK_TTL_MS = 10 * 60 * 1000; // stale lock older than 10 min → orphan sweep
+const LOCK_WAIT_MS = 12 * 1000;     // max wait when another swr holds the session
+const TOTAL_BUDGET_MS = parseInt(process.env.SWR_TOTAL_BUDGET || '45', 10) * 1000;
+const T0 = Date.now();
+
+/* ---------- args ---------- */
+let url = null;
+let asJson = false;
+for (const a of process.argv.slice(2)) {
+  if (a === '--json') asJson = true;
+  else if (a === '--version' || a === '-V') { console.log('swr ' + VERSION); process.exit(0); }
+  else if (a === '--help' || a === '-h') { usage(); process.exit(0); }
+  else if (a.startsWith('-')) { tErr('unknown flag: ' + a); process.exit(2); }
+  else if (url === null) url = a;
+  else { tErr('only one URL supported'); process.exit(2); }
+}
+if (!url) { usage(); process.exit(2); }
+try { url = new URL(url).href; } catch { tErr('invalid URL: ' + url); process.exit(2); }
+
+function usage() { process.stderr.write('usage: swr [--json] <url>\n'); }
+function tErr(m) { process.stderr.write(`[SWR] ${m}\n`); }
+function tlog(m) { process.stderr.write(`[SWR] ${m} (${((Date.now() - T0) / 1000).toFixed(1)}s)\n`); }
+function elapsedMs() { return Date.now() - T0; }
+function assertBudget(what) { if (elapsedMs() > TOTAL_BUDGET_MS) throw new Error('budget exhausted at ' + what); }
+function firstLine(s) { return String(s || '').trim().split('\n')[0]; }
+const sleepSync = (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* node<12 */ } };
+function isAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
+
+function sh(cmd, args2, timeoutS) {
+  const r = spawnSync(cmd, args2, { encoding: 'utf8', timeout: timeoutS * 1000, maxBuffer: 32 * 1024 * 1024 });
+  return { code: r.status === null ? 124 : r.status, out: r.stdout || '', err: r.stderr || '' };
+}
+
+/* ---------- opencli session lifecycle (zero orphan tabs) ---------- */
+let openSession = null; // tab lease currently held by this process
+
+function closeSession() {
+  if (!openSession) return;
+  const s = openSession;
+  openSession = null;
+  sh('opencli', ['browser', s, 'close'], 10); // best effort, never throws
+}
+
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    tErr('signal ' + sig + ' → closing session ' + (openSession || '(none)'));
+    closeSession();
+    process.exit(sig === 'SIGINT' ? 130 : 143);
+  });
+}
+
+/* Deterministic session id: host + path, NO query/fragment (no tab sprawl). */
+function sessionId(u) {
+  const x = new URL(u);
+  return 'swr-' + crypto.createHash('sha1').update(x.host + x.pathname.replace(/\/+$/, '')).digest('hex').slice(0, 10);
+}
+
+/* Lockfile = mutex + will. Content {pid, ts}: if the holder is dead or the
+ * lock is stale, WE close its orphan tab and take over. */
+function acquireLock(sid) {
+  const lockPath = path.join(os.tmpdir(), sid + '.lock');
+  const payload = JSON.stringify({ pid: process.pid, sid, ts: Date.now() });
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let announced = false;
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      fs.writeSync(fd, payload);
+      fs.closeSync(fd);
+      return { path: lockPath };
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      let stale = false, oldPid = 0;
+      try {
+        const raw = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        oldPid = raw.pid;
+        stale = Date.now() - (raw.ts || 0) > LOCK_TTL_MS || !isAlive(raw.pid);
+      } catch { stale = true; }
+      if (stale) {
+        tlog('stale lock (pid ' + oldPid + ') → orphan-tab cleanup for ' + sid);
+        sh('opencli', ['browser', sid, 'close'], 10);
+        try { fs.unlinkSync(lockPath); } catch { /* raced, retry */ }
+        continue;
+      }
+      if (!announced) { tlog('another swr holds ' + sid + ', waiting…'); announced = true; }
+      if (Date.now() > deadline) return null;
+      sleepSync(500);
+    }
+  }
+}
+function releaseLock(lock) { if (lock) { try { fs.unlinkSync(lock.path); } catch { /* gone */ } } }
+
+/* ---------- failure detector (Bayesian-ish scoring, escalate at >= 1.0) ---------- */
+const HARD_MARKERS = [
+  ['cloudflare-challenge', /just a moment|cf-challenge|challenge-platform|attention required|cf-browser-verification|cf_chl/i],
+  ['antibot', /perimeterx|px-captcha|captcha-delivery|datadome|geetest|\bcaptcha\b|are you a robot|verify you are human/i],
+  ['denied', /access denied|you have been blocked|request blocked|unusual traffic|banned/i],
+];
+
+function htmlToText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#\d+;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/* Minimal HTML → Markdown. ~60 lines, zero deps, good enough for LLM intake. */
+function htmlToMd(html) {
+  const txt = (h) => h.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  let s = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<(nav|footer|aside|noscript)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ');
+  s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, l, t) => '\n\n' + '#'.repeat(+l) + ' ' + txt(t) + '\n\n');
+  s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, t) => '\n- ' + txt(t));
+  s = s.replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+    (_, h, t) => { const x = txt(t); return x ? `[${x}](${h})` : ''; });
+  s = s.replace(/<(p|div|br|section|article|header|main|table|tr|h[1-6])[^>]*>/gi, '\n');
+  s = s.replace(/<[^>]+>/g, ' ');
+  s = s.replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
+       .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'");
+  return s.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').replace(/^\s+|\s+$/g, '') + '\n';
+}
+
+function failureScore(html, httpCode) {
+  const reasons = [];
+  let score = 0;
+  if ([403, 429, 503].includes(httpCode)) { score += 1; reasons.push('HTTP ' + httpCode); }
+  for (const [name, re] of HARD_MARKERS) {
+    if (re.test(html)) { score += 1; reasons.push(name); break; }
+  }
+  const textLen = htmlToText(html).length;
+  if (/enable javascript|enable cookies to|requires javascript/i.test(html)) { score += 0.6; reasons.push('js-required'); }
+  if (/<div[^>]+id=["'](root|__next|__nuxt|app|q-app|root-app)["']/.test(html) && textLen < 200) { score += 0.6; reasons.push('spa-shell'); }
+  if (/sign in to continue|log ?in to continue|please log ?in|please sign in/i.test(html)) { score += 0.5; reasons.push('login-wall'); }
+  if (httpCode === 200 && html.length < 500 && textLen < 100) { score += 0.5; reasons.push('tiny-body'); }
+  return { score, reasons, textLen };
+}
+
+/* ---------- L1: plain fetch ---------- */
+function tryL1() {
+  const r = sh('curl', [
+    '-sL', '--compressed', '-m', String(L1_TIMEOUT), '-A', UA,
+    '-w', '\n__SWR__%{http_code}', url,
+  ], L1_TIMEOUT);
+  if (r.code !== 0) return { fail: ['curl-exit-' + r.code + (r.err ? ':' + firstLine(r.err) : '')] };
+  const m = r.out.match(/\n?__SWR__(\d{3})/);
+  if (!m) return { fail: ['curl-no-meta'] };
+  const httpCode = +m[1];
+  const body = r.out.slice(0, m.index);
+  const d = failureScore(body, httpCode);
+  if (d.textLen < 20 && d.score < 1) { d.score += 1; d.reasons.push('no-text'); }
+  return { httpCode, body, ...d };
+}
+
+/* ---------- L3 helpers: network JSON capture ---------- */
+function parseNetworkEntries(out) {
+  let data = null;
+  try { data = JSON.parse(out); } catch { /* try slicing */ }
+  if (!data) {
+    const i = out.indexOf('['), j = out.indexOf('{');
+    const start = i >= 0 && (i < j || j < 0) ? i : j;
+    if (start >= 0) { try { data = JSON.parse(out.slice(start)); } catch { return []; } }
+  }
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.entries)) return data.entries;
+  if (data && typeof data === 'object') {
+    const arr = Object.values(data).find(Array.isArray);
+    return arr || [];
+  }
+  return [];
+}
+const API_RE = /\/api\/|graphql|\bjson\b|\?format=json|\/v[0-9]\//i;
+
+/* ---------- L2 + L3 in one session: open → extract → [network] → close ---------- */
+function tryL2L3(sid) {
+  let result = null;
+  try {
+    assertBudget('L2 open');
+    const ro = sh('opencli', ['browser', sid, 'open', url], OPEN_TIMEOUT);
+    if (ro.code !== 0) throw new Error('open failed: ' + firstLine(ro.err || ro.out));
+    openSession = sid;
+
+    const re = sh('opencli', ['browser', sid, 'extract', '--chunk-size', '20000'], EXTRACT_TIMEOUT);
+    let md = '';
+    let title = '';
+    if (re.code === 0) {
+      const out = re.out.trim();
+      try {
+        const j = JSON.parse(out); // extract emits a JSON envelope: {url,title,content,...}
+        md = String(j.content || '');
+        title = String(j.title || '');
+      } catch { md = out; } // older builds: raw markdown
+    }
+    if (md.length > 200) {
+      const body = (title ? `# ${title}\n\n` : '') + md;
+      return { kind: 'md', body };
+    }
+    tlog(`L2 extract thin (${md.length}b) → L3 network capture`);
+
+    assertBudget('L3 network');
+    const rn = sh('opencli', ['browser', sid, 'network', '--since', '60s'], NETWORK_TIMEOUT);
+    const entries = rn.code === 0 ? parseNetworkEntries(rn.out) : [];
+    const hits = entries.filter((e) => API_RE.test(String(e.url || e.href || '')) && (e.key || e.id));
+    tlog(`L3: ${entries.length} entries captured, ${hits.length} API-ish`);
+    for (const h of hits.slice(0, 3)) {
+      const key = String(h.key || h.id);
+      const rd = sh('opencli', ['browser', sid, 'network', '--detail', key, '--max-body', '20000'], NETWORK_TIMEOUT);
+      if (rd.code === 0 && rd.out.trim().length > 50) { result = { kind: 'json', body: rd.out.trim() }; break; }
+    }
+  } finally {
+    closeSession(); // zero orphan tabs: normal path, exception, signal — all covered
+  }
+  return result;
+}
+
+/* ---------- output ---------- */
+/* data:-URI images (inline base64) are pure token poison — strip them. */
+function stripJunk(md) {
+  return md.replace(/!\[[^\]]*\]\(data:[^)]+\)/g, '').replace(/\]\((data:[^)]+)\)/g, '](stripped-data-uri)');
+}
+function emit(source, body) {
+  body = stripJunk(body);
+  tlog(`${source} ok → ${body.length}b to stdout`);
+  if (asJson) {
+    console.log(JSON.stringify({ url, source, elapsed_ms: elapsedMs(), content: body }));
+  } else {
+    console.log(body);
+  }
+}
+
+/* ---------- main ---------- */
+const l1 = tryL1();
+if (!l1.fail && l1.score < 1) {
+  emit('L1', htmlToMd(l1.body));
+  process.exit(0);
+}
+tlog(`L1 failed (${(l1.fail || l1.reasons).join(', ')}) → escalating to Chrome`);
+
+if (sh('opencli', ['--version'], 5).code !== 0) {
+  tErr('opencli unavailable — cannot escalate (install OpenCLI or run: opencli doctor)');
+  process.exit(4);
+}
+
+const sid = sessionId(url);
+const lock = acquireLock(sid);
+if (!lock) { tErr('session ' + sid + ' busy >' + LOCK_WAIT_MS / 1000 + 's, giving up'); process.exit(3); }
+
+let result = null;
+try {
+  result = tryL2L3(sid);
+} catch (e) {
+  tlog('L2/L3 error: ' + firstLine(e.message));
+} finally {
+  releaseLock(lock);
+}
+
+if (!result) {
+  tlog('gave up: no readable content via L1/L2/L3');
+  process.exit(1);
+}
+emit(result.kind === 'json' ? 'L3' : 'L2', result.body);
+
+

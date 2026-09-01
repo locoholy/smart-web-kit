@@ -1,0 +1,22 @@
+{
+  "name": "smart-web-kit",
+  "version": "1.0.0",
+  "description": "swr — Smart Web Read: curl → real-Chrome → network-JSON escalation ladder for AI agents. Zero npm dependencies.",
+  "bin": {
+    "swr": "tools/swr"
+  },
+  "files": [
+    "tools/",
+    "skills/",
+    "install.sh",
+    "README.md"
+  ],
+  "keywords": [
+    "ai-agents", "claude-code", "web-scraping", "opencli", "escalation",
+    "cloudflare", "spa", "markdown", "cli"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
