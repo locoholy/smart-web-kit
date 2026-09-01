@@ -37,10 +37,9 @@ else
 fi
 
 # 3) smoke test
-if command -v opencli >/dev/null 2>&1; then
-  echo "opencli:   found ($(command -v opencli))"
-else
-  echo "opencli:   NOT found — swr will work on L1 only (no Chrome escalation). Install OpenCLI."
-fi
-
 "$BIN_DIR/swr" --version && echo "OK. Try: swr https://example.com"
+echo "---"
+echo "Wire any AI agent to swr inside a project:"
+echo "  swr init          # ./.agents/skills (Codex / Agent-Skills CLIs)"
+echo "  swr init --claude # ./.claude/skills (Claude)"
+echo "  swr doctor        # ready / not-ready + what to install for Chrome escalation"

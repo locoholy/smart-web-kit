@@ -21,7 +21,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const L1_TIMEOUT = parseInt(process.env.SWR_L1_TIMEOUT || '5', 10);
 const OPEN_TIMEOUT = 20;
@@ -32,10 +32,57 @@ const LOCK_WAIT_MS = 12 * 1000;     // max wait when another swr holds the sessi
 const TOTAL_BUDGET_MS = parseInt(process.env.SWR_TOTAL_BUDGET || '45', 10) * 1000;
 const T0 = Date.now();
 
+/* The one SKILL.md that wires ANY Agent-Skills-capable CLI (Codex, Claude, Cline,
+ * Antigravity, ...) to the `swr` binary. `init` drops this into the current
+ * project so the agent auto-picks it up — no global install needed. */
+const INIT_SKILL = `---
+name: smart-web-read
+description: >-
+  READ any web page (docs, articles, blog posts, research, raw JSON API
+  endpoints) via the \`swr\` binary. It tries cheap HTTP fetch first, detects
+  SPA shells / Cloudflare / antibot walls / login redirects, and escalates to
+  the user's real logged-in Chrome via opencli, then to network JSON capture.
+  stdout is ALWAYS clean Markdown or JSON. Triggers: "read this url",
+  "open the docs", "what does this page say", "прочитай страницу",
+  "открой ссылку". NOT for search (use smart-search), NOT for browser forms.
+allowed-tools: Bash(swr:*), Bash(opencli:*), Read
+---
+
+# smart-web-read — one command, not a ceremony
+
+## Iron rule
+
+Never improvise web reading (raw \`curl\` archaeology, headless browsers,
+repeated search-by-fragments). Always run \`swr\`:
+
+\`\`\`bash
+swr <url>          # clean Markdown → stdout, telemetry → stderr
+swr --json <url>   # envelope: {url, source, elapsed_ms, content}
+\`\`\`
+
+Read \`stdout\` only. \`swr doctor\` says whether Chrome escalation is available.
+If \`swr\` is missing: \`npm install -g smart-web-kit\`, then \`swr init\` to
+reproduce this skill, then \`swr --version\`. Do NOT fall back to raw \`curl\`.
+
+## Exit codes → what to do
+
+| code | meaning | action |
+|---|---|---|
+| 0 | content on stdout | parse and use |
+| 1 | page unreadable / real error (404, login wall, Chrome error page) | say so; offer \`swr\` retry or screenshot |
+| 2 | bad usage | fix your arguments |
+| 3 | timeout / session busy | retry **once**, then give up |
+| 4 | opencli unavailable for escalation | run \`swr doctor\`; ask the user to fix the bridge |
+`;
+
+const args = process.argv.slice(2);
+if (args[0] === 'init') { cmdInit(); process.exit(0); }
+if (args[0] === 'doctor') { cmdDoctor(); process.exit(0); }
+
 /* ---------- args ---------- */
 let url = null;
 let asJson = false;
-for (const a of process.argv.slice(2)) {
+for (const a of args) {
   if (a === '--json') asJson = true;
   else if (a === '--version' || a === '-V') { console.log('swr ' + VERSION); process.exit(0); }
   else if (a === '--help' || a === '-h') { usage(); process.exit(0); }
@@ -46,10 +93,46 @@ for (const a of process.argv.slice(2)) {
 if (!url) { usage(); process.exit(2); }
 try { url = new URL(url).href; } catch { tErr('invalid URL: ' + url); process.exit(2); }
 
-function usage() { process.stderr.write('usage: swr [--json] <url>\n'); }
+function usage() { process.stderr.write('usage: swr [--json] <url> | swr init [--claude] | swr doctor\n'); }
 function tErr(m) { process.stderr.write(`[SWR] ${m}\n`); }
+
+function cmdInit() {
+  const flags = args.slice(1);
+  const toClaude = flags.includes('--claude');
+  const dir = toClaude ? path.join('.claude', 'skills') : path.join('.agents', 'skills');
+  const skillDir = path.join(dir, 'smart-web-read');
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(path.join(skillDir, 'SKILL.md'), INIT_SKILL);
+  tErr('init: wrote SKILL.md → ' + path.join(skillDir, 'SKILL.md'));
+  tErr('init: ' + (toClaude
+    ? 'Claude picks it up from ./.claude/skills'
+    : 'Codex / Agent-Skills CLIs pick it up from ./.agents/skills'));
+}
+
+function cmdDoctor() {
+  const opencliOk = sh('opencli', ['--version'], 5).code === 0;
+  let chromeOk = false;
+  const chromePaths = [
+    '/Applications/Google Chrome.app',
+    '/Applications/Google Chrome Beta.app',
+    '/Applications/Chromium.app',
+    path.join(process.env.HOME || '', '.config', 'google-chrome'),
+  ];
+  chromePaths.forEach((p) => { if (fs.existsSync(p)) chromeOk = true; });
+  const ready = opencliOk && chromeOk;
+  tErr('opencli: ' + (opencliOk ? 'found' : 'MISSING — Chrome escalation off'));
+  tErr('chrome:  ' + (chromeOk ? 'found' : 'MISSING — Chrome escalation off'));
+  tErr(ready
+    ? 'swr is ready: full L1→L2→L3 ladder available'
+    : 'swr is NOT ready for full escalation. Install + authorize OpenCLI (opencli.com, then `opencli doctor`) and install Google Chrome. Basic L1 curl still works without them.');
+  console.log(ready ? 'ready' : 'not-ready');
+}
 function tlog(m) { process.stderr.write(`[SWR] ${m} (${((Date.now() - T0) / 1000).toFixed(1)}s)\n`); }
 function elapsedMs() { return Date.now() - T0; }
+function remainingMs() { return Math.max(0, TOTAL_BUDGET_MS - elapsedMs()); }
+/* Clamp a per-step timeout to the real budget left — the 45s total is actually
+ * enforced, not decorative. */
+function withBudget(dfltMs) { return Math.max(1000, Math.min(dfltMs, remainingMs())); }
 function assertBudget(what) { if (elapsedMs() > TOTAL_BUDGET_MS) throw new Error('budget exhausted at ' + what); }
 function firstLine(s) { return String(s || '').trim().split('\n')[0]; }
 const sleepSync = (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* node<12 */ } };
@@ -160,7 +243,8 @@ function htmlToMd(html) {
 function failureScore(html, httpCode) {
   const reasons = [];
   let score = 0;
-  if ([403, 429, 503].includes(httpCode)) { score += 1; reasons.push('HTTP ' + httpCode); }
+  // Any 4xx/5xx is a hard fail: 404, 403, 410, 500, ... — never content.
+  if (httpCode >= 400) { score += 1; reasons.push('HTTP ' + httpCode); }
   for (const [name, re] of HARD_MARKERS) {
     if (re.test(html)) { score += 1; reasons.push(name); break; }
   }
@@ -170,6 +254,13 @@ function failureScore(html, httpCode) {
   if (/sign in to continue|log ?in to continue|please log ?in|please sign in/i.test(html)) { score += 0.5; reasons.push('login-wall'); }
   if (httpCode === 200 && html.length < 500 && textLen < 100) { score += 0.5; reasons.push('tiny-body'); }
   return { score, reasons, textLen };
+}
+
+/* Chrome/nginx-style error page posing as content — a credibility killer.
+ * Detect it so `swr` never emits an error as success. */
+const ERROR_PAGE_RE = /the page you were looking|that page doesn|translate.google.com.\.html|error \b404\b|\b404\b not found|no such file|has moved permanently|access denied by|sign in to continue|log ?in to continue|please log ?in|please sign in|verify you are human|\\bcaptcha\\b|не удается получить доступ|не удается установить соединение|не позволяет установить соединение|err_connection|err_name_not_resolved|err_ssl|getaddrinfo|connection refused|cannot connect|this site can.t be reached|can.t be reached|refused to connect/i;
+function looksLikeError(body) {
+  return ERROR_PAGE_RE.test(String(body || '').toLowerCase());
 }
 
 /* ---------- L1: plain fetch ---------- */
@@ -185,7 +276,11 @@ function tryL1() {
   const body = r.out.slice(0, m.index);
   const d = failureScore(body, httpCode);
   if (d.textLen < 20 && d.score < 1) { d.score += 1; d.reasons.push('no-text'); }
-  return { httpCode, body, ...d };
+  // Only explicit not-content markers block success: 4xx/5xx, antibot,
+  // Cloudflare, login wall, JS-required, SPA shell. `tiny-body` alone is NOT
+  // a blocker — a short valid 200 (API JSON, one-line reply) is real content.
+  const blocked = d.score > 0 && !(d.reasons.length === 1 && d.reasons[0] === 'tiny-body');
+  return { httpCode, body, blocked, ...d };
 }
 
 /* ---------- L3 helpers: network JSON capture ---------- */
@@ -212,11 +307,11 @@ function tryL2L3(sid) {
   let result = null;
   try {
     assertBudget('L2 open');
-    const ro = sh('opencli', ['browser', sid, 'open', url], OPEN_TIMEOUT);
+    const ro = sh('opencli', ['browser', sid, 'open', url], withBudget(OPEN_TIMEOUT));
     if (ro.code !== 0) throw new Error('open failed: ' + firstLine(ro.err || ro.out));
     openSession = sid;
 
-    const re = sh('opencli', ['browser', sid, 'extract', '--chunk-size', '20000'], EXTRACT_TIMEOUT);
+    const re = sh('opencli', ['browser', sid, 'extract', '--chunk-size', '20000'], withBudget(EXTRACT_TIMEOUT));
     let md = '';
     let title = '';
     if (re.code === 0) {
@@ -234,13 +329,13 @@ function tryL2L3(sid) {
     tlog(`L2 extract thin (${md.length}b) → L3 network capture`);
 
     assertBudget('L3 network');
-    const rn = sh('opencli', ['browser', sid, 'network', '--since', '60s'], NETWORK_TIMEOUT);
+    const rn = sh('opencli', ['browser', sid, 'network', '--since', '60s'], withBudget(NETWORK_TIMEOUT));
     const entries = rn.code === 0 ? parseNetworkEntries(rn.out) : [];
     const hits = entries.filter((e) => API_RE.test(String(e.url || e.href || '')) && (e.key || e.id));
     tlog(`L3: ${entries.length} entries captured, ${hits.length} API-ish`);
     for (const h of hits.slice(0, 3)) {
       const key = String(h.key || h.id);
-      const rd = sh('opencli', ['browser', sid, 'network', '--detail', key, '--max-body', '20000'], NETWORK_TIMEOUT);
+      const rd = sh('opencli', ['browser', sid, 'network', '--detail', key, '--max-body', '20000'], withBudget(NETWORK_TIMEOUT));
       if (rd.code === 0 && rd.out.trim().length > 50) { result = { kind: 'json', body: rd.out.trim() }; break; }
     }
   } finally {
@@ -266,7 +361,9 @@ function emit(source, body) {
 
 /* ---------- main ---------- */
 const l1 = tryL1();
-if (!l1.fail && l1.score < 1) {
+// exit 0 on L1 ONLY when the fetch returned real content — any
+// not-content marker (404/login/antibot/JS-wall/SPA) blocks success.
+if (!l1.fail && !l1.blocked && l1.textLen >= 10) {
   emit('L1', htmlToMd(l1.body));
   process.exit(0);
 }
@@ -292,6 +389,10 @@ try {
 
 if (!result) {
   tlog('gave up: no readable content via L1/L2/L3');
+  process.exit(1);
+}
+if (looksLikeError(result.body)) {
+  tlog('failed: even after escalation the result is an error page, not content');
   process.exit(1);
 }
 emit(result.kind === 'json' ? 'L3' : 'L2', result.body);

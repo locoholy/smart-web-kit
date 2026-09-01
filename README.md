@@ -19,21 +19,32 @@ Agents burn ~80% of their time and context reading the web through raw `curl`
 
 ## Install (macOS / Linux)
 
-Prerequisites: `node >= 18`, Chrome, [OpenCLI](https://opencli.com) installed and authorized (`opencli doctor`).
+Prerequisites: `node >= 18`, Chrome, [OpenCLI](https://opencli.com) installed
+and authorized (`opencli doctor`).
 
 ```bash
 git clone https://github.com/<you>/smart-web-kit.git && cd smart-web-kit
-./install.sh              # binary → ~/.local/bin, skills → ~/.claude/skills
-./install.sh --project    # additionally copy skills into ./.claude/skills and ./.agents/skills
-# or via npm:
-npm install -g .          # provides the `swr` binary
+npm install -g .          # provides the `swr` binary (L1 works immediately)
+# or: ./install.sh        # binary → ~/.local/bin, skills → ~/.claude/skills
+#     ./install.sh --project  # also copy skills into ./.claude/skills and ./.agents/skills
 ```
+
+Then, inside any project an AI agent will work on, wire the agent to `swr`:
+
+```bash
+swr init                 # drops skills/smart-web-read/SKILL.md into ./.agents/skills
+swr init --claude        # same, but into ./.claude/skills for Claude
+swr doctor               # "ready" / "not-ready" + exactly what to install for Chrome escalation
+```
+
+That's it: one install, one command (`swr <url>`), one honest result — any
+agent that can run a CLI can use the tool. No per-agent adapters.
 
 ## The `swr` escalation ladder
 
-```
+```text
 L1  curl (5s)  ──ok──►  HTML → Markdown ──► exit 0
- │ fail score ≥ 1.0
+ │ fail score ≥ 1.0 (hard marker: 4xx/5xx, antibot, login wall, JS wall)
  ▼
 L2  opencli browser swr-<hash> open → extract (real Chrome, 20s)
  │ DOM extract empty
@@ -45,18 +56,28 @@ exit 1, stderr explains why
 ```
 
 Failure detector (Bayesian-ish scoring, escalate at score ≥ 1.0):
+any 4xx/5xx (403/404/429/503/...), Cloudflare/DataDome/PerimeterX/captcha,
+login wall, "Enable JavaScript" shell, empty SPA shell. A *short valid 200*
+(bare JSON API, one-line reply) is NOT a failure — it reads fine on L1.
 
-| Signal | Score |
-|---|---|
-| HTTP 403 / 429 / 503 | 1.0 |
-| Cloudflare / DataDome / PerimeterX / captcha markers | 1.0 |
-| `Enable JavaScript` wall | 0.6 |
-| SPA shell (`id="root"/__next/__nuxt/app`) with < 200 chars of text | 0.6 |
-| login wall ("Sign in to continue") | 0.5 |
-| 200 OK with body < 500 B and no text | 0.5 |
+## Honesty contract (the dot that matters)
+
+`swr` never sells an error as content:
+
+| Input | stdout | exit |
+|---|---|---|
+| real page / valid JSON | clean Markdown or JSON | 0 |
+| 404, 5xx, login wall, captcha wall | **nothing** | 1 |
+| unreachable host (Chrome error page) | **nothing** | 1 |
+| bad usage / invalid URL | nothing (usage on stderr) | 2 |
+
+Success means *real content was read*. `swr init` + `swr doctor` exist so any
+new agent gets wired up in seconds, not per-agent ceremony.
 
 ## Reliability guarantees
 
+- **Real 45-second budget**: every L2/L3 step (open/extract/network) is clamped
+  to the time actually left, so the total cannot run away.
 - **Zero orphan tabs**: `opencli close` runs in `finally`, on SIGINT/SIGTERM,
   and on total-budget timeout. A lockfile (`/tmp/swr-<hash>.lock`) acts as a
   will: the *next* `swr` run detects a dead PID / stale lock (> 10 min) and
@@ -75,14 +96,21 @@ Failure detector (Bayesian-ish scoring, escalate at score ≥ 1.0):
 
 | Exit code | Meaning | Agent action |
 |---|---|---|
-| 0 | content on stdout | parse it |
-| 1 | all levels failed | report "page unreadable", offer screenshot fallback |
+| 0 | real content on stdout | parse it |
+| 1 | page unreadable / real error (404, login wall, error page) | report "page unreadable", offer screenshot fallback |
 | 2 | bad usage | fix arguments |
 | 3 | timeout / session busy | retry once, then give up |
-| 4 | opencli unavailable | run `opencli doctor`, ask user |
+| 4 | opencli unavailable (escalation needed) | run `swr doctor`, ask user |
 
 Configuration via env: `SWR_TOTAL_BUDGET` (seconds, default 45),
 `SWR_L1_TIMEOUT` (seconds, default 5).
+
+## Tests
+
+```bash
+./tests/run.sh     # local server, no network/Chrome needed — asserts the
+                   # honesty invariants (200/JSON → 0; 404/5xx/wall → 1+empty)
+```
 
 ## Skills
 
