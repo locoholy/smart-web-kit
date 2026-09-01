@@ -1,6 +1,6 @@
 {
   "name": "smart-web-kit",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "swr — Smart Web Read: curl → real-Chrome → network-JSON escalation ladder for AI agents + smart-search skill. Zero npm dependencies. One install (`npm i -g`), one command (`swr <url>`), one honest result.",
   "bin": {
     "swr": "tools/swr"

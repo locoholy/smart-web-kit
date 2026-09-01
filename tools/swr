@@ -21,7 +21,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const L1_TIMEOUT = parseInt(process.env.SWR_L1_TIMEOUT || '5', 10);
 const OPEN_TIMEOUT = 20;
@@ -73,7 +73,7 @@ If \`swr\` is missing: ask the user to install smart-web-kit
 | 1 | page unreadable / real error (404, login wall, Chrome error page) | say so; offer \`swr\` retry or screenshot |
 | 2 | bad usage | fix your arguments |
 | 3 | timeout / session busy | retry **once**, then give up |
-| 4 | opencli unavailable for escalation | run \`swr doctor\`; ask the user to fix the bridge |
+| 4 | opencli unavailable / Chrome extension not connected | run \`swr doctor\`; ask the user to fix the bridge |
 `;
 
 const args = process.argv.slice(2);
@@ -100,22 +100,25 @@ function tErr(m) { process.stderr.write(`[SWR] ${m}\n`); }
 function cmdInit() {
   const flags = args.slice(1);
   const global = flags.includes('--global');
-  // One command → every Agent-Skills-capable CLI picks the skill up:
-  // project mode: ./.agents/skills (Codex/Cline/etc) + ./.claude/skills (Claude)
-  // global mode:  ~/.agents/skills + ~/.claude/skills
+  // One command → every Agent-Skills-capable CLI picks the skill up.
+  // Project mode:  ./.agents/skills + ./.claude/skills
+  // Global mode:   ~/.agents, ~/.claude, ~/.codex, ~/.cursor, ~/.gemini
   const roots = global
-    ? [path.join(process.env.HOME || '', '.agents'), path.join(process.env.HOME || '', '.claude')]
+    ? ['.agents', '.claude', '.codex', '.cursor', '.gemini'].map((d) => path.join(process.env.HOME || '', d))
     : [process.cwd(), process.cwd()];
-  const subdirs = global ? ['skills', 'skills'] : ['.agents/skills', '.claude/skills'];
-  let written = 0;
+  const subdirs = global
+    ? ['skills', 'skills', 'skills', 'skills', 'skills']
+    : ['.agents/skills', '.claude/skills'];
+  const labels = global ? ['agents', 'claude', 'codex', 'cursor', 'gemini'] : ['agents', 'claude'];
   for (let i = 0; i < roots.length; i++) {
     const skillDir = path.join(roots[i], subdirs[i], 'smart-web-read');
     fs.mkdirSync(skillDir, { recursive: true });
     fs.writeFileSync(path.join(skillDir, 'SKILL.md'), INIT_SKILL);
     tErr('init: wrote SKILL.md → ' + skillDir + '/SKILL.md');
-    written++;
   }
-  tErr('init: done — ' + (global ? 'global (~/.agents/skills, ~/.claude/skills)' : 'project (./.agents/skills, ./.claude/skills)') + '; any Agent-Skills CLI picks it up');
+  tErr('init: done — ' + (global
+    ? 'global (' + labels.map((l) => '~.' + l).join(', ') + ')'
+    : 'project (./.agents/skills, ./.claude/skills)') + '; any Agent-Skills CLI picks it up');
   if (!global) tErr('init: tip — run `swr init --global` once to wire ALL projects on this machine');
 }
 
@@ -129,12 +132,29 @@ function cmdDoctor() {
     path.join(process.env.HOME || '', '.config', 'google-chrome'),
   ];
   chromePaths.forEach((p) => { if (fs.existsSync(p)) chromeOk = true; });
-  const ready = opencliOk && chromeOk;
-  tErr('opencli: ' + (opencliOk ? 'found' : 'MISSING — Chrome escalation off'));
-  tErr('chrome:  ' + (chromeOk ? 'found' : 'MISSING — Chrome escalation off'));
-  tErr(ready
-    ? 'swr is ready: full L1→L2→L3 ladder available'
-    : 'swr is NOT ready for full escalation. Install + authorize OpenCLI (opencli.com, then `opencli doctor`) and install Google Chrome. Basic L1 curl still works without them.');
+  // The real gate for L2/L3 is the Chrome bridge: daemon + the OpenCLI Chrome
+  // extension. `opencli --version` alone says nothing about it. Probe it.
+  let extOk = null; // null = unknown/not reported, true = connected, false = missing
+  if (opencliOk) {
+    const dr = sh('opencli', ['doctor'], 20);
+    const blob = (dr.out || '') + '\n' + (dr.err || '');
+    const m = blob.match(/Extension:\s*([^\n]+)/i);
+    if (dr.code === 0 && m) extOk = !/not connected|fail|error|missing|disconnected/i.test(m[1]);
+    else if (dr.code !== 0) extOk = false;
+  }
+  const ready = opencliOk && chromeOk && extOk !== false;
+  tErr('opencli:   ' + (opencliOk ? 'found' : 'MISSING — Chrome escalation off'));
+  tErr('chrome:    ' + (chromeOk ? 'found' : 'MISSING — Chrome escalation off'));
+  if (opencliOk) {
+    if (extOk === true) tErr('extension: connected (opencli doctor)');
+    else if (extOk === false) tErr('extension: NOT connected — install the OpenCLI Chrome extension (Chrome Web Store) and run `opencli doctor`');
+    else tErr('extension: unknown (opencli doctor did not report a status — still runs full ladder)');
+  }
+  if (!ready) {
+    tErr('swr is NOT ready for full escalation. Install + authorize OpenCLI (npm i -g @jackwener/opencli, add the OpenCLI Chrome extension, then `opencli doctor`) and install Google Chrome. Basic L1 curl still works without them.');
+  } else {
+    tErr('swr is ready: full L1→L2→L3 ladder available');
+  }
   console.log(ready ? 'ready' : 'not-ready');
 }
 function tlog(m) { process.stderr.write(`[SWR] ${m} (${((Date.now() - T0) / 1000).toFixed(1)}s)\n`); }

@@ -25,8 +25,10 @@ Prerequisites: `node >= 18`, Chrome.
 
 - **L1 works out of the box** — plain HTTP fetch, no extras needed.
 - **Full ladder (L2/L3) + smart-search** need [OpenCLI](https://opencli.com):
-  `npm install -g @jackwener/opencli`, then add the OpenCLI extension in
-  Chrome (Chrome Web Store) and check `opencli doctor`.
+  `npm install -g @jackwener/opencli`, then add the **OpenCLI Chrome extension**
+  (Chrome Web Store) and check `opencli doctor` — it must say
+  `Extension: connected` (without it, Chrome escalation in `swr` cannot run;
+  `swr doctor` checks this too).
 
 ```bash
 git clone https://github.com/<you>/smart-web-kit.git && cd smart-web-kit
@@ -39,8 +41,8 @@ Then, inside any project an AI agent will work on, wire the agent to `swr`:
 
 ```bash
 swr init                 # SKILL.md → ./.agents/skills AND ./.claude/skills (one command, both)
-swr init --global        # same, into ~/.agents/skills + ~/.claude/skills — wires ALL projects on this machine
-swr doctor               # "ready" / "not-ready" + exactly what to install for Chrome escalation
+swr init --global        # same, into ~/.agents, ~/.claude, ~/.codex, ~/.cursor, ~/.gemini — wires ALL projects on this machine
+swr doctor               # "ready" / "not-ready" + exactly what to install (incl. the Chrome extension) for escalation
 ```
 
 That's it: one install, one command (`swr <url>`), one honest result — any
