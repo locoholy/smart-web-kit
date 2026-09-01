@@ -19,8 +19,12 @@ Agents burn ~80% of their time and context reading the web through raw `curl`
 
 ## Install (macOS / Linux)
 
-Prerequisites: `node >= 18`, Chrome, [OpenCLI](https://opencli.com) installed
-and authorized (`opencli doctor`).
+Prerequisites: `node >= 18`, Chrome.
+
+- **L1 works out of the box** — plain HTTP fetch, no extras needed.
+- **Full ladder (L2/L3) + smart-search** need [OpenCLI](https://opencli.com):
+  `npm install -g @jackwener/opencli`, then add the OpenCLI extension in
+  Chrome (Chrome Web Store) and check `opencli doctor`.
 
 ```bash
 git clone https://github.com/<you>/smart-web-kit.git && cd smart-web-kit

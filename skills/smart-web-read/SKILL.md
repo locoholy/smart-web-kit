@@ -24,8 +24,9 @@ swr --json <url>   # envelope: {url, source, elapsed_ms, content}
 ```
 
 Read `stdout` only. `swr doctor` says whether Chrome escalation is available.
-If `swr` is missing: `npm install -g smart-web-kit`, then `swr init` to
-reproduce this skill, then `swr --version`. Do NOT fall back to raw `curl`.
+If `swr` is missing: ask the user to install smart-web-kit
+(`git clone <repo> && cd smart-web-kit && npm install -g .`), then run
+`swr init` to reproduce this skill. Do NOT fall back to raw `curl`.
 
 ## Exit codes → what to do
 
