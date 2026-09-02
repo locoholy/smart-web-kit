@@ -304,6 +304,13 @@ function htmlToMd(html, base) {
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<(nav|footer|aside|noscript)[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ');
+  /* A chart's data lives in the aria-label of its shapes, never in a text
+   * node, so stripping tags leaves the agent blind to it. SVG graphic
+   * elements hold no prose, so lifting their label cannot duplicate text. */
+  s = s.replace(
+    /<(g|circle|rect|path|polygon|polyline|line|ellipse|image|svg)\s[^>]*aria-label=["']([^"']+)["'][^>]*>/gi,
+    (_, _tag, label) => '\n- ' + label.trim(),
+  );
   s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, l, t) => '\n\n' + '#'.repeat(+l) + ' ' + txt(t) + '\n\n');
   s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, t) => '\n- ' + txt(t));
   s = s.replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
