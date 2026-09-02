@@ -1,7 +1,8 @@
 # smart-web-kit
 
-Agent-native web **reading** and **searching** for Claude Code / Antigravity / Cline / any CLI agent.
-Two primitives, zero npm dependencies, one install command.
+Agent-native web reading, source discovery, and research for Claude Code /
+Antigravity / Cline / any CLI agent. Three primitives, zero npm dependencies,
+one install command.
 
 ## Why
 
@@ -13,18 +14,18 @@ Agents burn ~80% of their time and context reading the web through raw `curl`
   Markdown or JSON. Cheap HTTP fetch first; on detected failure escalates to
   the user's **real logged-in Chrome** via [OpenCLI](https://opencli.com)
   (Cloudflare already passed, sessions alive), then to network JSON capture.
-- **`swr-search`** (skill) — search discipline for agents that already have
-  native search: direct routes only (native search → `swr` → say what
-  failed), hard budget of max **3 real calls** per question, no engine
-  re-spam, mandatory Search Balance report at the end of every answer.
-  No "ask another AI" middlemen.
+- **`swr-search`** (skill) — direct lookup and source discovery. It prevents
+  redundant requests but does not impose a fixed call cap.
+- **`swr-research`** (skill) — multi-source collection: source queue → full
+  catalog/API/pagination scan → normalized dataset → LLM analysis. It never
+  filters before retaining the source records.
 
 ## Install (macOS / Linux)
 
 Prerequisites: `node >= 18`, Chrome.
 
 - **L1 works out of the box** — plain HTTP fetch, no extras needed.
-- **Full ladder (L2/L3) + smart-search** need [OpenCLI](https://opencli.com):
+- **Full ladder (L2/L3) + swr-search** need [OpenCLI](https://opencli.com):
   `npm install -g @jackwener/opencli`, then add the **OpenCLI Chrome extension**
   (Chrome Web Store) and check `opencli doctor` — it must say
   `Extension: connected` (without it, Chrome escalation in `swr` cannot run;
@@ -33,20 +34,26 @@ Prerequisites: `node >= 18`, Chrome.
 ```bash
 git clone https://github.com/<you>/smart-web-kit.git && cd smart-web-kit
 npm install -g .          # provides the `swr` binary (L1 works immediately)
-# or: ./install.sh        # binary → ~/.local/bin, skills → ~/.claude/skills
-#     ./install.sh --project  # also copy skills into ./.claude/skills and ./.agents/skills
+# or: ./install.sh        # symlinks the binary into ~/.local/bin, then runs `swr init`
 ```
 
-Then, inside any project an AI agent will work on, wire the agent to `swr`:
+Then sync the skill registry once:
 
 ```bash
-swr init                 # SKILL.md → ./.agents/skills AND ./.claude/skills (one command, both)
-swr init --global        # same, into ~/.agents, ~/.claude, ~/.codex, ~/.cursor, ~/.gemini — wires ALL projects on this machine
+swr init                 # 3 SKILL.md → ~/.agents/skills + every agent root you already have
 swr doctor               # "ready" / "not-ready" + exactly what to install (incl. the Chrome extension) for escalation
+swr doctor --skills      # verifies EVERY installed copy matches this release
 ```
 
+`init` writes to `~/.agents/skills` and to any of `~/.claude`, `~/.codex`,
+`~/.cursor`, `~/.gemini`, `~/.cline` that already exist — it never creates a
+root for an agent you do not run. A copy left behind in one of those roots
+wins over the canonical one inside that agent, so a root left unsynced is a
+root quietly serving an old skill; `doctor --skills` checks all of them.
+
 That's it: one install, one command (`swr <url>`), one honest result — any
-agent that can run a CLI can use the tool. No per-agent adapters.
+agent that supports Agent Skills can use the tool. No project-local copies or
+per-agent adapters.
 
 ## The `swr` escalation ladder
 
@@ -111,19 +118,21 @@ new agent gets wired up in seconds, not per-agent ceremony.
 | 4 | opencli unavailable (escalation needed) | run `swr doctor`, ask user |
 
 Configuration via env: `SWR_TOTAL_BUDGET` (seconds, default 45),
-`SWR_L1_TIMEOUT` (seconds, default 5).
+`SWR_L1_TIMEOUT` (seconds, default 5), `SWR_BROWSER_WINDOW`
+(`background` by default; `foreground` only when requested), and
+`SWR_BROWSER=off` for L1-only runs.
 
 ## Tests
 
 ```bash
-./tests/run.sh     # local server, no network/Chrome needed — asserts the
-                   # honesty invariants (200/JSON → 0; 404/5xx/wall → 1+empty)
+./tests/run.sh     # local server + fake OpenCLI; no network/Chrome/focus change
 ```
 
 ## Skills
 
 - [`skills/smart-web-read/SKILL.md`](skills/smart-web-read/SKILL.md) — teaches the agent to *always* use `swr` for URLs.
-- [`skills/swr-search/SKILL.md`](skills/swr-search/SKILL.md) — EN/RU search discipline: direct routes, budget enforcement, balance report.
+- [`skills/swr-search/SKILL.md`](skills/swr-search/SKILL.md) — direct lookup and source discovery.
+- [`skills/swr-research/SKILL.md`](skills/swr-research/SKILL.md) — complete multi-source collection before analysis.
 
 ## License
 

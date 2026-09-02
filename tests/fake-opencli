@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -eu
+
+: "${SWR_OPENCLI_LOG:?SWR_OPENCLI_LOG is required}"
+printf '%s\n' "$*" >> "$SWR_OPENCLI_LOG"
+
+if [ "${1:-}" = "--version" ]; then exit 0; fi
+
+case "${3:-}" in
+  open|close) exit 0 ;;
+  extract)
+    if [ "${SWR_FAKE_ERROR:-}" = "1" ]; then
+      printf '%s\n' '{"title":"Unavailable","content":"HTTP ERROR 418"}'
+      exit 0
+    fi
+    if [ "${SWR_FAKE_MENTION:-}" = "1" ]; then
+      printf '%s\n' '{"title":"Fake browser","content":"This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. This deterministic fixture stands in for a real article returned by Chrome. It carries enough readable prose to look like an actual page rather than a wall. It also mentions, in passing, that a stale bookmark may show 404 not found and that some sections ask you to please log in - a mention inside a real page, not a wall."}'
+      exit 0
+    fi
+    if [ "${SWR_FAKE_THIN_EXTRACT:-}" = "1" ] || [ "${SWR_FAKE_L3:-}" = "1" ]; then
+      printf '%s\n' '{"title":"Fake browser","content":"thin"}'
+      exit 0
+    fi
+    printf '%s\n' '{"title":"Fake browser","content":"This response is intentionally long enough to prove that L2 returned browser content without launching Chrome. It contains a complete, deterministic fixture for the session lifecycle and argument contract test, so the test can verify background-window behavior without changing the active application window."}'
+    exit 0
+    ;;
+  get)
+    if [ "${SWR_FAKE_ERROR:-}" = "1" ]; then
+      printf '%s\n' '<main><h1>Unavailable</h1><p>HTTP ERROR 418</p></main>'
+      exit 0
+    fi
+    if [ "${SWR_FAKE_L3:-}" = "1" ]; then exit 1; fi
+    printf '%s\n' '<main><h1>DOM fallback</h1><p>This deterministic landmark contains the product details that extract failed to return. It intentionally includes enough readable product information to pass the same credibility threshold as a real catalog card: plan, duration, delivery method, seller terms, and availability.</p></main>'
+    exit 0
+    ;;
+  network)
+    if [ "${SWR_FAKE_L3:-}" = "1" ]; then
+      if [ "${4:-}" = "--detail" ]; then
+        if [ "${5:-}" = "first-party" ]; then
+          printf '%s\n' '{"plan":"SuperGrok","duration_days":7,"source":"first-party-api"}'
+          exit 0
+        fi
+        exit 1
+      fi
+      printf '%s\n' '[{"key":"third-party","url":"https://cdn.example.net/consent.json"},{"key":"first-party","url":"http://127.0.0.1/api/catalog"}]'
+      exit 0
+    fi
+    ;;
+esac
+
+exit 1

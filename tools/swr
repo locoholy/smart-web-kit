@@ -21,135 +21,29 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.3.0';
+const VERSION = '1.5.0';
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const L1_TIMEOUT = parseInt(process.env.SWR_L1_TIMEOUT || '5', 10);
 const OPEN_TIMEOUT = 20;
 const EXTRACT_TIMEOUT = 20;
+const DOM_TIMEOUT = 5;
 const NETWORK_TIMEOUT = 15;
 const LOCK_TTL_MS = 10 * 60 * 1000; // stale lock older than 10 min → orphan sweep
 const LOCK_WAIT_MS = 12 * 1000;     // max wait when another swr holds the session
+const BROWSER_WINDOW = process.env.SWR_BROWSER_WINDOW || 'background';
+const BROWSER_ENABLED = process.env.SWR_BROWSER !== 'off';
+const OPENCLI_BIN = process.env.SWR_OPENCLI_BIN || 'opencli';
 const TOTAL_BUDGET_MS = parseInt(process.env.SWR_TOTAL_BUDGET || '45', 10) * 1000;
 const T0 = Date.now();
 
-/* The one SKILL.md that wires ANY Agent-Skills-capable CLI (Codex, Claude, Cline,
- * Antigravity, ...) to the `swr` binary. `init` drops this into the current
- * project so the agent auto-picks it up — no global install needed. */
-const INIT_SKILL = `---
-name: smart-web-read
-description: >-
-  READ any web page (docs, articles, blog posts, research, raw JSON API
-  endpoints) via the \`swr\` binary. It tries cheap HTTP fetch first, detects
-  SPA shells / Cloudflare / antibot walls / login redirects, and escalates to
-  the user's real logged-in Chrome via opencli, then to network JSON capture.
-  stdout is ALWAYS clean Markdown or JSON. Triggers: "read this url",
-  "open the docs", "what does this page say", "прочитай страницу",
-  "открой ссылку". NOT for search (use swr-search), NOT for browser forms.
-allowed-tools: Bash(swr:*), Bash(opencli:*), Read
----
-
-# smart-web-read — one command, not a ceremony
-
-## Iron rule
-
-Never improvise web reading (raw \`curl\` archaeology, headless browsers,
-repeated search-by-fragments). Always run \`swr\`:
-
-\`\`\`bash
-swr <url>          # clean Markdown → stdout, telemetry → stderr
-swr --json <url>   # envelope: {url, source, elapsed_ms, content}
-\`\`\`
-
-Read \`stdout\` only. \`swr doctor\` says whether Chrome escalation is available.
-If \`swr\` is missing: ask the user to install smart-web-kit
-(\`git clone <repo> && cd smart-web-kit && npm install -g .\`), then run
-\`swr init\` to reproduce this skill. Do NOT fall back to raw \`curl\`.
-
-## Exit codes → what to do
-
-| code | meaning | action |
-|---|---|---|
-| 0 | content on stdout | parse and use |
-| 1 | page unreadable / real error (404, login wall, Chrome error page) | say so; offer \`swr\` retry or screenshot |
-| 2 | bad usage | fix your arguments |
-| 3 | timeout / session busy | retry **once**, then give up |
-| 4 | opencli unavailable / Chrome extension not connected | run \`swr doctor\`; ask the user to fix the bridge |
-`;
-
-/* The second bundled skill: search discipline for agents that already have
- * native search. Wired by `swr init` (project) / `swr init --global` (home)
- * exactly like smart-web-read, so one command drops BOTH skills into every
- * Agent-Skills-capable CLI directory. Named swr-search — deliberately NOT
- * "smart-search" (a generic name already used by other tools → collisions). */
-const INIT_SKILL_SEARCH = `---
-name: swr-search
-description: >-
-  Use when the user wants to SEARCH, LOOK UP, RESEARCH or FIND information:
-  "search for", "find out", "look up", "research", "what's the latest on",
-  "google it", "check online", "найди", "поищи", "погугли", "поиск", "узнай",
-  "что нового", "исследуй", "наведи справку". Governs HOW to search with the
-  tools you already have (native web search / fetch, swr for reading): direct
-  routes only, a hard budget of max 3 real calls per question, no engine
-  re-spam, mandatory Search Balance report. Escalation order: native search →
-  swr (Chrome escalation built in) → only if everything failed, say so.
-  NOT for reading a known URL (use smart-web-read) and NOT for browser
-  automation.
----
-
-# swr-search — direct routes only, spend the budget, report the balance
-
-## Route map (in escalation order — never skip a level)
-
-1. **Native search** (agent's built-in web search / fetch). This is the
-   default: no middlemen, fastest, cheapest. If results are readable — done.
-2. **\`swr <url>\`** for every page read and for pages native fetch failed on:
-   swr escalates to the real Chrome by itself (Cloudflare, SPA, login walls).
-   Do NOT hand-roll curl, do NOT open a headless browser, do NOT ask another
-   AI to search for you — that is a middleman, not a source.
-3. **Everything failed** (walls + timeouts + swr exit 1): say what is
-   unreachable and why, and stop. Do not "route to another AI source" —
-   another AI searching for you adds fragility, latency and zero authority.
-
-The user names a site → go there directly (search on that site, or
-\`swr <site-url>\`). No substitutes, no routing tables.
-
-## Budget per question (the only hard rule that matters)
-
-One question = one intent; clarifications and follow-ups do NOT reset it.
-
-- **Max 3 real calls** (searches or page fetches) per question.
-- A 2nd call to the same source needs a *changed* query (added time / region
-  / language / platform / filter). Same normalized query to the same source
-  is always blocked.
-- A failed call (error, timeout, captcha, wall) counts as 1 call. No
-  infinite retries.
-- Budget spent and info still missing → **say what's missing**. Do not
-  escalate, do not "just one more search".
-
-## Mandatory Search Balance
-
-End every search-driven answer with this fixed block (compact, 3–5 lines):
-
-\`\`\`md
-**Search Balance**
-- native search ×1: "rust async runtimes 2026 comparison"
-- swr ×2: docs.rs/tokio (403 → Chrome ok); blog.example.com/post (exit 1, wall)
-- budget: 3/3 calls used
-\`\`\`
-
-Rules: every real call appears exactly once with its query/url and count;
-skipped steps appear with the skip reason. **No balance block = the search
-did not happen properly.** Fix it before answering.
-`;
-
-const INIT_SKILLS = [
-  { dir: 'smart-web-read', content: INIT_SKILL },
-  { dir: 'swr-search', content: INIT_SKILL_SEARCH },
-];
+const INIT_SKILLS = ['smart-web-read', 'swr-search', 'swr-research'].map((dir) => ({
+  dir,
+  source: path.join(__dirname, '..', 'skills', dir, 'SKILL.md'),
+}));
 
 const args = process.argv.slice(2);
 if (args[0] === 'init') { cmdInit(); process.exit(0); }
-if (args[0] === 'doctor') { cmdDoctor(); process.exit(0); }
+if (args[0] === 'doctor') { cmdDoctor(args.slice(1)); process.exit(0); }
 
 /* ---------- args ---------- */
 let url = null;
@@ -162,41 +56,86 @@ for (const a of args) {
   else if (url === null) url = a;
   else { tErr('only one URL supported'); process.exit(2); }
 }
+if (!['background', 'foreground'].includes(BROWSER_WINDOW)) {
+  tErr('SWR_BROWSER_WINDOW must be background or foreground');
+  process.exit(2);
+}
 if (!url) { usage(); process.exit(2); }
 try { url = new URL(url).href; } catch { tErr('invalid URL: ' + url); process.exit(2); }
 
-function usage() { process.stderr.write('usage: swr [--json] <url> | swr init [--global] [--claude] | swr doctor\n'); }
+function usage() { process.stderr.write('usage: swr [--json] <url> | swr init | swr doctor [--skills]\n'); }
 function tErr(m) { process.stderr.write(`[SWR] ${m}\n`); }
 
 function cmdInit() {
   const flags = args.slice(1);
-  const global = flags.includes('--global');
-  // One command → every Agent-Skills-capable CLI picks BOTH skills up.
-  // Project mode:  ./.agents/skills + ./.claude/skills
-  // Global mode:   ~/.agents, ~/.claude, ~/.codex, ~/.cursor, ~/.gemini
-  const roots = global
-    ? ['.agents', '.claude', '.codex', '.cursor', '.gemini'].map((d) => path.join(process.env.HOME || '', d))
-    : [process.cwd(), process.cwd()];
-  const subdirs = global
-    ? ['skills', 'skills', 'skills', 'skills', 'skills']
-    : ['.agents/skills', '.claude/skills'];
-  const labels = global ? ['agents', 'claude', 'codex', 'cursor', 'gemini'] : ['agents', 'claude'];
-  for (let i = 0; i < roots.length; i++) {
-    for (const sk of INIT_SKILLS) {
-      const skillDir = path.join(roots[i], subdirs[i], sk.dir);
-      fs.mkdirSync(skillDir, { recursive: true });
-      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), sk.content);
-      tErr('init: wrote ' + sk.dir + '/SKILL.md → ' + skillDir + '/SKILL.md');
+  if (flags.length > 0) {
+    tErr('init has no flags; it installs globally into ~/.agents/skills');
+    process.exit(2);
+  }
+  for (const sk of INIT_SKILLS) {
+    if (!fs.existsSync(sk.source)) {
+      tErr('bundled skill missing: ' + sk.source);
+      process.exit(1);
     }
   }
-  tErr('init: done — ' + (global
-    ? 'global (' + labels.map((l) => '~.' + l).join(', ') + ')'
-    : 'project (./.agents/skills, ./.claude/skills)') + '; any Agent-Skills CLI picks up smart-web-read + swr-search');
-  if (!global) tErr('init: tip — run `swr init --global` once to wire ALL projects on this machine');
+  for (const root of skillRoots()) {
+    for (const sk of INIT_SKILLS) {
+      const skillDir = path.join(root, sk.dir);
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.copyFileSync(sk.source, path.join(skillDir, 'SKILL.md'));
+    }
+    tErr('init: 3 skills → ' + root);
+  }
+  tErr('init: done');
 }
 
-function cmdDoctor() {
-  const opencliOk = sh('opencli', ['--version'], 5).code === 0;
+function home() { return process.env.HOME || os.homedir(); }
+function skillsRoot() { return path.join(home(), '.agents', 'skills'); }
+
+/* The canonical root, plus every agent-specific root that ALREADY exists.
+ * We never create a root for an agent the user does not run — but a copy left
+ * behind in one of them wins over the canonical one inside that agent, so a
+ * root we do not sync is a root that silently serves a stale skill. */
+function skillRoots() {
+  const roots = [skillsRoot()];
+  for (const a of ['.claude', '.codex', '.cursor', '.gemini', '.cline']) {
+    const r = path.join(home(), a, 'skills');
+    if (fs.existsSync(r)) roots.push(r);
+  }
+  return roots;
+}
+
+function cmdDoctor(flags) {
+  if (flags.length > 1 || (flags.length === 1 && flags[0] !== '--skills')) {
+    tErr('doctor supports only --skills');
+    process.exit(2);
+  }
+  if (flags[0] === '--skills') {
+    // Check every root, not just the canonical one: a stale copy the agent
+    // actually loads is the failure this command exists to catch.
+    let synced = true;
+    for (const root of skillRoots()) {
+      for (const sk of INIT_SKILLS) {
+        const target = path.join(root, sk.dir, 'SKILL.md');
+        const isCanonical = root === skillsRoot();
+        if (!fs.existsSync(target)) {
+          if (!isCanonical) continue; // agent simply does not carry this skill
+          tErr('skill ' + sk.dir + ' @ ' + root + ': MISSING');
+          synced = false;
+          continue;
+        }
+        const matches = fs.existsSync(sk.source)
+          && fs.readFileSync(sk.source, 'utf8') === fs.readFileSync(target, 'utf8');
+        if (!matches) tErr('skill ' + sk.dir + ' @ ' + root + ': OUT OF SYNC — run `swr init`');
+        synced &&= matches;
+      }
+    }
+    if (synced) tErr('skills: all roots synced (' + skillRoots().join(', ') + ')');
+    console.log(synced ? 'skills-ready' : 'skills-out-of-sync');
+    process.exit(synced ? 0 : 1);
+  }
+
+  const opencliOk = shOpencli(['--version'], 5).code === 0;
   let chromeOk = false;
   const chromePaths = [
     '/Applications/Google Chrome.app',
@@ -209,7 +148,7 @@ function cmdDoctor() {
   // extension. `opencli --version` alone says nothing about it. Probe it.
   let extOk = null; // null = unknown/not reported, true = connected, false = missing
   if (opencliOk) {
-    const dr = sh('opencli', ['doctor'], 20);
+    const dr = shOpencli(['doctor'], 20);
     const blob = (dr.out || '') + '\n' + (dr.err || '');
     const m = blob.match(/Extension:\s*([^\n]+)/i);
     if (dr.code === 0 && m) extOk = !/not connected|fail|error|missing|disconnected/i.test(m[1]);
@@ -233,10 +172,12 @@ function cmdDoctor() {
 function tlog(m) { process.stderr.write(`[SWR] ${m} (${((Date.now() - T0) / 1000).toFixed(1)}s)\n`); }
 function elapsedMs() { return Date.now() - T0; }
 function remainingMs() { return Math.max(0, TOTAL_BUDGET_MS - elapsedMs()); }
-/* Clamp a per-step timeout to the real budget left — the 45s total is actually
- * enforced, not decorative. */
-function withBudget(dfltMs) { return Math.max(1000, Math.min(dfltMs, remainingMs())); }
-function assertBudget(what) { if (elapsedMs() > TOTAL_BUDGET_MS) throw new Error('budget exhausted at ' + what); }
+/* Every process helper accepts seconds. Keep the total budget in milliseconds
+ * for elapsed-time arithmetic, but convert it once at this boundary. */
+function withBudget(dfltSeconds) {
+  return Math.max(1, Math.min(dfltSeconds, Math.ceil(remainingMs() / 1000)));
+}
+function assertBudget(what) { if (remainingMs() <= 0) throw new Error('budget exhausted at ' + what); }
 function firstLine(s) { return String(s || '').trim().split('\n')[0]; }
 const sleepSync = (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* node<12 */ } };
 function isAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
@@ -245,6 +186,7 @@ function sh(cmd, args2, timeoutS) {
   const r = spawnSync(cmd, args2, { encoding: 'utf8', timeout: timeoutS * 1000, maxBuffer: 32 * 1024 * 1024 });
   return { code: r.status === null ? 124 : r.status, out: r.stdout || '', err: r.stderr || '' };
 }
+function shOpencli(args2, timeoutS) { return sh(OPENCLI_BIN, args2, timeoutS); }
 
 /* ---------- opencli session lifecycle (zero orphan tabs) ---------- */
 let openSession = null; // tab lease currently held by this process
@@ -253,7 +195,7 @@ function closeSession() {
   if (!openSession) return;
   const s = openSession;
   openSession = null;
-  sh('opencli', ['browser', s, 'close'], 10); // best effort, never throws
+  shOpencli(['browser', s, 'close'], 10); // best effort, never throws
 }
 
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
@@ -293,7 +235,7 @@ function acquireLock(sid) {
       } catch { stale = true; }
       if (stale) {
         tlog('stale lock (pid ' + oldPid + ') → orphan-tab cleanup for ' + sid);
-        sh('opencli', ['browser', sid, 'close'], 10);
+        shOpencli(['browser', sid, 'close'], 10);
         try { fs.unlinkSync(lockPath); } catch { /* raced, retry */ }
         continue;
       }
@@ -305,26 +247,46 @@ function acquireLock(sid) {
 }
 function releaseLock(lock) { if (lock) { try { fs.unlinkSync(lock.path); } catch { /* gone */ } } }
 
-/* ---------- failure detector (Bayesian-ish scoring, escalate at >= 1.0) ---------- */
+/* ---------- what is NOT content ----------
+ * One detector for every level. Hard markers mean "not content" wherever they
+ * appear. Soft markers count only on a page with too little readable text: an
+ * article that merely mentions "please log in" or "404 not found" is content;
+ * a 30-byte page that says it is a wall. `mode` picks which checks apply:
+ *   html — L1 HTML body: everything, incl. SPA shell and Google SERP shape
+ *   text — L2 extracted text: markers only, no tags left to inspect
+ *   api  — non-HTML payload (JSON/XML/plain): the HTTP status is the authority
+ */
 const HARD_MARKERS = [
   ['cloudflare-challenge', /just a moment|cf-challenge|challenge-platform|attention required|cf-browser-verification|cf_chl/i],
   ['antibot', /perimeterx|px-captcha|captcha-delivery|datadome|geetest|\bcaptcha\b|are you a robot|verify you are human/i],
   ['denied', /access denied|you have been blocked|request blocked|unusual traffic|banned/i],
+  ['search-wall-signal', /(?:[?&]|&amp;)emsg=/i],
+];
+/* [name, text ceiling, pattern] — fires only when the body has less readable
+ * text than the ceiling. This is what stops a long, valid page from being
+ * thrown away because one sentence inside it mentions a login or a 404. */
+const SOFT_MARKERS = [
+  ['login-wall', 2000, /sign in to continue|log ?in to continue|please log ?in|please sign in/i],
+  ['js-required', 2000, /enable javascript|enable cookies to|requires javascript/i],
+  ['browser-error', 2000, /\bhttp error\s+\d{3}\b|\b404\b[\s-]*not found|the page you were looking|no such file|err_connection|err_name_not_resolved|err_ssl|getaddrinfo|connection refused|this site can.t be reached|refused to connect|не удается получить доступ|не удается установить соединение/i],
+  ['spa-shell', 200, /<div[^>]+id=["'](root|__next|__nuxt|app|q-app|root-app)["']/],
 ];
 
-function htmlToText(html) {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#\d+;/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+function isGoogleSearchUrl(value) {
+  const parsed = new URL(value);
+  return /(^|\.)google\./i.test(parsed.hostname) && parsed.pathname === '/search';
 }
 
-/* Minimal HTML → Markdown. ~60 lines, zero deps, good enough for LLM intake. */
+function googleSearchState(html) {
+  if (!isGoogleSearchUrl(url)) return null;
+  if (/(?:consent\.google\.com|recaptcha|unusual traffic)/i.test(html)) return 'google-wall';
+  const resultLinks = html.match(/<a\b[^>]+href=["'](?:\/url\?[^"']*[?&]q=|https?:\/\/(?![^"']*\.google\.)[^"']+)/gi) || [];
+  return resultLinks.length > 0 ? null : 'google-serp-without-results';
+}
+
+/* Minimal HTML → Markdown. ~60 lines, zero deps, good enough for LLM intake.
+ * Also the readability measure: we convert once and judge the result, instead
+ * of stripping the same HTML twice with two slightly different strippers. */
 function htmlToMd(html) {
   const txt = (h) => h.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
   let s = html
@@ -343,47 +305,52 @@ function htmlToMd(html) {
   return s.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').replace(/^\s+|\s+$/g, '') + '\n';
 }
 
-function failureScore(html, httpCode) {
+/* Returns the list of reasons this body is not readable content. Empty = ship it. */
+function notContent(body, httpCode, textLen, mode) {
   const reasons = [];
-  let score = 0;
   // Any 4xx/5xx is a hard fail: 404, 403, 410, 500, ... — never content.
-  if (httpCode >= 400) { score += 1; reasons.push('HTTP ' + httpCode); }
+  if (httpCode !== null && httpCode >= 400) reasons.push('HTTP ' + httpCode);
+  if (textLen < 20) reasons.push('no-text');
+  // An API payload is content by definition; its status code already ruled.
+  // Grepping JSON for the word "captcha" is how a tool invents failures.
+  if (mode === 'api') return reasons;
   for (const [name, re] of HARD_MARKERS) {
-    if (re.test(html)) { score += 1; reasons.push(name); break; }
+    if (re.test(body)) { reasons.push(name); break; }
   }
-  const textLen = htmlToText(html).length;
-  if (/enable javascript|enable cookies to|requires javascript/i.test(html)) { score += 0.6; reasons.push('js-required'); }
-  if (/<div[^>]+id=["'](root|__next|__nuxt|app|q-app|root-app)["']/.test(html) && textLen < 200) { score += 0.6; reasons.push('spa-shell'); }
-  if (/sign in to continue|log ?in to continue|please log ?in|please sign in/i.test(html)) { score += 0.5; reasons.push('login-wall'); }
-  if (httpCode === 200 && html.length < 500 && textLen < 100) { score += 0.5; reasons.push('tiny-body'); }
-  return { score, reasons, textLen };
-}
-
-/* Chrome/nginx-style error page posing as content — a credibility killer.
- * Detect it so `swr` never emits an error as success. */
-const ERROR_PAGE_RE = /the page you were looking|that page doesn|translate.google.com.\.html|error \b404\b|\b404\b not found|no such file|has moved permanently|access denied by|sign in to continue|log ?in to continue|please log ?in|please sign in|verify you are human|\\bcaptcha\\b|не удается получить доступ|не удается установить соединение|не позволяет установить соединение|err_connection|err_name_not_resolved|err_ssl|getaddrinfo|connection refused|cannot connect|this site can.t be reached|can.t be reached|refused to connect/i;
-function looksLikeError(body) {
-  return ERROR_PAGE_RE.test(String(body || '').toLowerCase());
+  if (mode === 'html') {
+    const googleState = googleSearchState(body);
+    if (googleState) reasons.push(googleState);
+  }
+  for (const [name, ceiling, re] of SOFT_MARKERS) {
+    if (textLen < ceiling && re.test(body)) { reasons.push(name); break; }
+  }
+  return reasons;
 }
 
 /* ---------- L1: plain fetch ---------- */
 function tryL1() {
+  assertBudget('L1 fetch');
+  const timeout = withBudget(L1_TIMEOUT);
   const r = sh('curl', [
-    '-sL', '--compressed', '-m', String(L1_TIMEOUT), '-A', UA,
-    '-w', '\n__SWR__%{http_code}', url,
-  ], L1_TIMEOUT);
+    '-sL', '--compressed', '-m', String(timeout), '-A', UA,
+    '-w', '\n__SWR__%{http_code} %{content_type}', url,
+  ], timeout);
   if (r.code !== 0) return { fail: ['curl-exit-' + r.code + (r.err ? ':' + firstLine(r.err) : '')] };
-  const m = r.out.match(/\n?__SWR__(\d{3})/);
+  // Trailer, not first match: a page is allowed to contain our marker text.
+  const i = r.out.lastIndexOf('\n__SWR__');
+  if (i < 0) return { fail: ['curl-no-meta'] };
+  const m = r.out.slice(i + 8).match(/^(\d{3})\s*(\S*)/);
   if (!m) return { fail: ['curl-no-meta'] };
   const httpCode = +m[1];
-  const body = r.out.slice(0, m.index);
-  const d = failureScore(body, httpCode);
-  if (d.textLen < 20 && d.score < 1) { d.score += 1; d.reasons.push('no-text'); }
-  // Only explicit not-content markers block success: 4xx/5xx, antibot,
-  // Cloudflare, login wall, JS-required, SPA shell. `tiny-body` alone is NOT
-  // a blocker — a short valid 200 (API JSON, one-line reply) is real content.
-  const blocked = d.score > 0 && !(d.reasons.length === 1 && d.reasons[0] === 'tiny-body');
-  return { httpCode, body, blocked, ...d };
+  const raw = r.out.slice(0, i);
+  // The server already said what this is. Ask it instead of guessing — running
+  // an HTML stripper over JSON silently eats every "a < b" it finds.
+  const isHtml = m[2]
+    ? /html|xml/i.test(m[2])
+    : /<html|<!doctype html|<body/i.test(raw.slice(0, 2000));
+  const body = isHtml ? htmlToMd(raw) : raw;
+  const reasons = notContent(isHtml ? raw : body, httpCode, body.length, isHtml ? 'html' : 'api');
+  return { httpCode, body, reasons, blocked: reasons.length > 0 };
 }
 
 /* ---------- L3 helpers: network JSON capture ---------- */
@@ -404,17 +371,25 @@ function parseNetworkEntries(out) {
   return [];
 }
 const API_RE = /\/api\/|graphql|\bjson\b|\?format=json|\/v[0-9]\//i;
+function isFirstPartyNetwork(entry) {
+  try {
+    const normalize = (host) => host.replace(/^(www|api)\./i, '');
+    const targetHost = normalize(new URL(url).hostname);
+    const entryHost = normalize(new URL(String(entry.url || entry.href || '')).hostname);
+    return entryHost === targetHost;
+  } catch { return false; }
+}
 
 /* ---------- L2 + L3 in one session: open → extract → [network] → close ---------- */
 function tryL2L3(sid) {
   let result = null;
   try {
     assertBudget('L2 open');
-    const ro = sh('opencli', ['browser', sid, 'open', url], withBudget(OPEN_TIMEOUT));
+    const ro = shOpencli(['browser', sid, 'open', url, '--window', BROWSER_WINDOW], withBudget(OPEN_TIMEOUT));
     if (ro.code !== 0) throw new Error('open failed: ' + firstLine(ro.err || ro.out));
     openSession = sid;
 
-    const re = sh('opencli', ['browser', sid, 'extract', '--chunk-size', '20000'], withBudget(EXTRACT_TIMEOUT));
+    const re = shOpencli(['browser', sid, 'extract', '--chunk-size', '20000'], withBudget(EXTRACT_TIMEOUT));
     let md = '';
     let title = '';
     if (re.code === 0) {
@@ -429,16 +404,24 @@ function tryL2L3(sid) {
       const body = (title ? `# ${title}\n\n` : '') + md;
       return { kind: 'md', body };
     }
-    tlog(`L2 extract thin (${md.length}b) → L3 network capture`);
+    tlog(`L2 extract thin (${md.length}b) → DOM landmark read`);
+    const rd = shOpencli([
+      'browser', sid, 'get', 'html', '--selector', 'main, article, [role=main]', '--as', 'html',
+    ], withBudget(DOM_TIMEOUT));
+    const dom = rd.code === 0 ? htmlToMd(rd.out) : '';
+    if (dom.length > 200) return { kind: 'md', body: dom };
+    tlog(`L2 DOM landmark thin (${dom.length}b) → L3 network capture`);
 
     assertBudget('L3 network');
-    const rn = sh('opencli', ['browser', sid, 'network', '--since', '60s'], withBudget(NETWORK_TIMEOUT));
+    const rn = shOpencli(['browser', sid, 'network', '--since', '60s'], withBudget(NETWORK_TIMEOUT));
     const entries = rn.code === 0 ? parseNetworkEntries(rn.out) : [];
-    const hits = entries.filter((e) => API_RE.test(String(e.url || e.href || '')) && (e.key || e.id));
-    tlog(`L3: ${entries.length} entries captured, ${hits.length} API-ish`);
+    const hits = entries.filter((e) => (
+      isFirstPartyNetwork(e) && API_RE.test(String(e.url || e.href || '')) && (e.key || e.id)
+    ));
+    tlog(`L3: ${entries.length} entries captured, ${hits.length} first-party API-ish`);
     for (const h of hits.slice(0, 3)) {
       const key = String(h.key || h.id);
-      const rd = sh('opencli', ['browser', sid, 'network', '--detail', key, '--max-body', '20000'], withBudget(NETWORK_TIMEOUT));
+      const rd = shOpencli(['browser', sid, 'network', '--detail', key, '--max-body', '20000'], withBudget(NETWORK_TIMEOUT));
       if (rd.code === 0 && rd.out.trim().length > 50) { result = { kind: 'json', body: rd.out.trim() }; break; }
     }
   } finally {
@@ -466,13 +449,24 @@ function emit(source, body) {
 const l1 = tryL1();
 // exit 0 on L1 ONLY when the fetch returned real content — any
 // not-content marker (404/login/antibot/JS-wall/SPA) blocks success.
-if (!l1.fail && !l1.blocked && l1.textLen >= 10) {
-  emit('L1', htmlToMd(l1.body));
+if (!l1.fail && !l1.blocked) {
+  emit('L1', l1.body);
   process.exit(0);
+}
+// A malformed request or a definitively absent resource cannot become readable
+// in Chrome. Avoid an expensive browser launch for these terminal responses.
+if (!l1.fail && [400, 404, 410, 422].includes(l1.httpCode)) {
+  tlog(`L1 terminal HTTP ${l1.httpCode} → not escalating`);
+  process.exit(1);
 }
 tlog(`L1 failed (${(l1.fail || l1.reasons).join(', ')}) → escalating to Chrome`);
 
-if (sh('opencli', ['--version'], 5).code !== 0) {
+if (!BROWSER_ENABLED) {
+  tErr('browser escalation disabled (SWR_BROWSER=off)');
+  process.exit(1);
+}
+
+if (shOpencli(['--version'], 5).code !== 0) {
   tErr('opencli unavailable — cannot escalate (install OpenCLI or run: opencli doctor)');
   process.exit(4);
 }
@@ -494,10 +488,12 @@ if (!result) {
   tlog('gave up: no readable content via L1/L2/L3');
   process.exit(1);
 }
-if (looksLikeError(result.body)) {
-  tlog('failed: even after escalation the result is an error page, not content');
+// Same detector as L1 — a Chrome error page must never be emitted as success.
+// `text` mode: no HTTP status to lean on, and soft markers stay bounded by the
+// text ceiling so a long, real page survives a stray "404 not found" inside it.
+const l2Reasons = notContent(result.body, null, result.body.length, result.kind === 'json' ? 'api' : 'text');
+if (l2Reasons.length) {
+  tlog('failed: escalation returned a wall, not content (' + l2Reasons.join(', ') + ')');
   process.exit(1);
 }
 emit(result.kind === 'json' ? 'L3' : 'L2', result.body);
-
-

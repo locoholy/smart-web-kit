@@ -9,12 +9,19 @@
 set -uo pipefail
 
 SWR="${SWR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/swr}"
+FAKE_OPENCLI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fake-opencli"
 PORT="${SWR_TEST_PORT:-38231}"
 TMP="$(mktemp -d)"
 SPID=""
 pass=0; fail=0
 
-cleanup(){ [ -n "$SPID" ] && kill "$SPID" 2>/dev/null; rm -rf "$TMP"; }
+cleanup(){
+  if [ -n "$SPID" ]; then
+    kill "$SPID" 2>/dev/null || true
+    wait "$SPID" 2>/dev/null || true
+  fi
+  rm -rf "$TMP"
+}
 trap cleanup EXIT
 
 cat > "$TMP/server.js" <<'EOF'
@@ -23,9 +30,17 @@ http.createServer((req,res)=>{
   const b=(s)=>setTimeout(()=>{res.writeHead(200,{"content-type":"text/html; charset=utf8"});res.end(s)},30);
   if(req.url==='/ok')    return b('<h1>Hello World</h1><p>This is a real page.</p>');
   if(req.url==='/json')  return b('{"key":"value","ok":true}');
+  // Served as JSON: must reach stdout byte-for-byte. An HTML stripper run over
+  // this silently turns "a < b and c > d" into "a d" and still exits 0.
+  if(req.url==='/api'){res.writeHead(200,{"content-type":"application/json"});
+    return res.end('{"title":"a < b and c > d","html":"<b>bold</b>","n":5}');}
+  // A long, valid article that merely MENTIONS a login and a 404. Content.
+  if(req.url==='/mentions') return b('<h1>Guide</h1><p>'+'Real documentation body. '.repeat(120)+
+    'If the dashboard shows 404 not found, please log in again.</p><p>'+'More prose. '.repeat(120)+'</p>');
   if(req.url==='/404'){res.writeHead(404,{"content-type":"text/html; charset=utf8"});return res.end('<h1>404 Not Found</h1><p>Missing.</p>');}
   if(req.url==='/502'){res.writeHead(502,{"content-type":"text/html; charset=utf8"});return res.end('<p>Bad Gateway</p>');}
   if(req.url==='/wall') return b('<h1>Sign in to continue</h1><p>Please log in.</p>');
+  if(req.url==='/gwall') return b('<title>Google Search</title><a href="/search?q=x&amp;emsg=SG_REL">Click here</a><p>If you are having trouble accessing Google Search, please click here.</p>');
   return b('<h1>Fallback</h1>');
 }).listen(Number(process.argv[2] || 38231));
 EOF
@@ -34,8 +49,28 @@ sleep 1
 
 is(){ [ "$?" -eq 0 ]; }
 
-r(){ # run swr capturing stdout; sets R_OUT, R_CODE
-  R_OUT=$(SWR_TOTAL_BUDGET=2 "$SWR" "$1" 2>/dev/null); R_CODE=$?
+r(){ # L1 tests must never invoke a real browser; sets R_OUT, R_CODE
+  R_OUT=$(SWR_BROWSER=off SWR_TOTAL_BUDGET=2 "$SWR" "$1" 2>/dev/null); R_CODE=$?
+}
+
+r_browser(){ # L2 contract test via fake OpenCLI; sets R_OUT, R_CODE
+  R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
+}
+
+r_browser_error(){ # A Chrome error page must never be emitted as readable content.
+  R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_FAKE_ERROR=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
+}
+
+r_browser_dom(){ # Thin extract must be recovered from the page landmark before L3.
+  R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_FAKE_THIN_EXTRACT=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
+}
+
+r_browser_mention(){ # A long L2 page that merely mentions a 404 is still content.
+  R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_FAKE_MENTION=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
+}
+
+r_browser_l3(){ # L3 must read only a first-party API response.
+  R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_FAKE_L3=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
 }
 
 check(){ # name expected actual  -> prints PASS/FAIL
@@ -49,6 +84,8 @@ BASE="http://127.0.0.1:$PORT"
 check "usage (no args)        " 2 "$( "$SWR"; echo $? )"
 check "invalid url            " 2 "$( "$SWR" notaurl 2>/dev/null; echo $? )"
 check "--version              " 0 "$( "$SWR" --version >/dev/null; echo $? )"
+check "init rejects flags     " 2 "$( "$SWR" init --global >/dev/null 2>&1; echo $? )"
+check "invalid browser window " 2 "$( SWR_BROWSER_WINDOW=sideways "$SWR" "$BASE/ok" >/dev/null 2>&1; echo $? )"
 check "valid 200 -> ok        " 0 "$( "$SWR" "$BASE/ok" >/dev/null 2>/dev/null; echo $? )"
 
 r "$BASE/ok"
@@ -56,21 +93,52 @@ r "$BASE/ok"
 r "$BASE/json"
   [ "$R_CODE" = 0 ] && [ -n "$R_OUT" ];    check "short JSON is content    " 1 "$(is && echo 1 || echo 0)"
 
+r "$BASE/api"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *'"a < b and c > d"'* ]] && [[ "$R_OUT" == *'"<b>bold</b>"'* ]]
+  check "JSON survives verbatim   " 1 "$(is && echo 1 || echo 0)"
+r "$BASE/mentions"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"Real documentation body"* ]]
+  check "long page: mention != wall" 1 "$(is && echo 1 || echo 0)"
+: > "$TMP/opencli.log"
+r_browser_mention "$BASE/gwall"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"deterministic fixture"* ]]
+  check "L2 page: mention != wall " 1 "$(is && echo 1 || echo 0)"
+
 r "$BASE/404"
   [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ];   check "404 -> exit != 0, empty  " 1 "$(is && echo 1 || echo 0)"
+: > "$TMP/opencli.log"
+r_browser "$BASE/404"
+  [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ] && [ ! -s "$TMP/opencli.log" ]; check "404 skips browser       " 1 "$(is && echo 1 || echo 0)"
 r "$BASE/502"
   [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ];   check "5xx -> exit != 0, empty  " 1 "$(is && echo 1 || echo 0)"
 r "$BASE/wall"
   [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ];   check "login wall -> err, empty " 1 "$(is && echo 1 || echo 0)"
+r "$BASE/gwall"
+  [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ];   check "google wall -> err, empty" 1 "$(is && echo 1 || echo 0)"
+r_browser "$BASE/gwall"
+  [ "$R_CODE" = 0 ] && [ -n "$R_OUT" ];    check "google wall -> fake L2 " 1 "$(is && echo 1 || echo 0)"
+  grep -F "open $BASE/gwall --window background" "$TMP/opencli.log" >/dev/null; check "L2 opens background    " 1 "$(is && echo 1 || echo 0)"
+r_browser_error "$BASE/gwall"
+  [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ];   check "Chrome HTTP error -> empty" 1 "$(is && echo 1 || echo 0)"
+r_browser_dom "$BASE/gwall"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"DOM fallback"* ]]; check "thin extract -> DOM read " 1 "$(is && echo 1 || echo 0)"
+  grep -F "get html --selector main, article, [role=main] --as html" "$TMP/opencli.log" >/dev/null; check "DOM landmark contract  " 1 "$(is && echo 1 || echo 0)"
+r_browser_l3 "$BASE/gwall"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *'"plan":"SuperGrok"'* ]]; check "L3 reads first-party API " 1 "$(is && echo 1 || echo 0)"
+  grep -F "network --detail first-party" "$TMP/opencli.log" >/dev/null && ! grep -F "network --detail third-party" "$TMP/opencli.log" >/dev/null; check "L3 rejects third-party    " 1 "$(is && echo 1 || echo 0)"
 r "http://10.255.255.1/x"
   [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ];   check "unreachable -> err, empty" 1 "$(is && echo 1 || echo 0)"
 
-mkdir -p "$TMP/proj" && ( cd "$TMP/proj" && "$SWR" init ) >/dev/null 2>&1
-  [ -f "$TMP/proj/.agents/skills/smart-web-read/SKILL.md" ]; check "swr init -> .agents read " 1 "$(is && echo 1 || echo 0)"
-  [ -f "$TMP/proj/.agents/skills/swr-search/SKILL.md" ];       check "swr init -> .agents search" 1 "$(is && echo 1 || echo 0)"
-  [ -f "$TMP/proj/.claude/skills/smart-web-read/SKILL.md" ]; check "swr init -> .claude read " 1 "$(is && echo 1 || echo 0)"
-  [ -f "$TMP/proj/.claude/skills/swr-search/SKILL.md" ];       check "swr init -> .claude search" 1 "$(is && echo 1 || echo 0)"
-  [ ! -d "$TMP/proj/.claude/skills/smart-search" ];            check "no stale smart-search  " 1 "$(is && echo 1 || echo 0)"
+mkdir -p "$TMP/home" "$TMP/proj" && ( cd "$TMP/proj" && HOME="$TMP/home" "$SWR" init ) >/dev/null 2>&1
+  [ -f "$TMP/home/.agents/skills/smart-web-read/SKILL.md" ]; check "swr init -> global read  " 1 "$(is && echo 1 || echo 0)"
+  [ -f "$TMP/home/.agents/skills/swr-search/SKILL.md" ];       check "swr init -> global search" 1 "$(is && echo 1 || echo 0)"
+  [ -f "$TMP/home/.agents/skills/swr-research/SKILL.md" ];     check "swr init -> global research" 1 "$(is && echo 1 || echo 0)"
+  cmp -s "$(dirname "$SWR")/../skills/smart-web-read/SKILL.md" "$TMP/home/.agents/skills/smart-web-read/SKILL.md"; check "read source synced      " 1 "$(is && echo 1 || echo 0)"
+  cmp -s "$(dirname "$SWR")/../skills/swr-search/SKILL.md" "$TMP/home/.agents/skills/swr-search/SKILL.md";       check "search source synced    " 1 "$(is && echo 1 || echo 0)"
+  cmp -s "$(dirname "$SWR")/../skills/swr-research/SKILL.md" "$TMP/home/.agents/skills/swr-research/SKILL.md";   check "research source synced  " 1 "$(is && echo 1 || echo 0)"
+  [ "$(HOME="$TMP/home" "$SWR" doctor --skills 2>/dev/null; echo $?)" = "skills-ready
+0" ]; check "doctor skills synced    " 1 "$(is && echo 1 || echo 0)"
+  [ ! -d "$TMP/proj/.agents" ] && [ ! -d "$TMP/proj/.claude" ]; check "no project skill dirs   " 1 "$(is && echo 1 || echo 0)"
 
 echo "---"
 echo "pass=$pass fail=$fail"
