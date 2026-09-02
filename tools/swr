@@ -340,22 +340,25 @@ function tryL1() {
   const timeout = withBudget(L1_TIMEOUT);
   const r = sh('curl', [
     '-sL', '--compressed', '-m', String(timeout), '-A', UA,
-    '-w', '\n__SWR__%{http_code} %{content_type} %{url_effective}', url,
+    // content_type goes LAST: it is the only field that can contain a space
+    // ("text/html; charset=utf-8"), so anything after it gets swallowed.
+    '-w', '\n__SWR__%{http_code} %{url_effective} %{content_type}', url,
   ], timeout);
   if (r.code !== 0) return { fail: ['curl-exit-' + r.code + (r.err ? ':' + firstLine(r.err) : '')] };
   // Trailer, not first match: a page is allowed to contain our marker text.
   const i = r.out.lastIndexOf('\n__SWR__');
   if (i < 0) return { fail: ['curl-no-meta'] };
-  const m = r.out.slice(i + 8).match(/^(\d{3})\s*(\S*)\s*(\S*)/);
+  const m = r.out.slice(i + 8).match(/^(\d{3})\s+(\S*)\s*([\s\S]*)$/);
   if (!m) return { fail: ['curl-no-meta'] };
   const httpCode = +m[1];
   // Links resolve against where the redirects actually landed, not where we aimed.
-  const finalUrl = m[3] || url;
+  const finalUrl = /^https?:/i.test(m[2]) ? m[2] : url;
+  const ctype = m[3].trim();
   const raw = r.out.slice(0, i);
   // The server already said what this is. Ask it instead of guessing — running
   // an HTML stripper over JSON silently eats every "a < b" it finds.
-  const isHtml = m[2]
-    ? /html|xml/i.test(m[2])
+  const isHtml = ctype
+    ? /html|xml/i.test(ctype)
     : /<html|<!doctype html|<body/i.test(raw.slice(0, 2000));
   const body = isHtml ? htmlToMd(raw, finalUrl) : raw;
   const reasons = notContent(isHtml ? raw : body, httpCode, body.length, isHtml ? 'html' : 'api');
