@@ -287,8 +287,15 @@ function googleSearchState(html) {
 /* Minimal HTML → Markdown. ~60 lines, zero deps, good enough for LLM intake.
  * Also the readability measure: we convert once and judge the result, instead
  * of stripping the same HTML twice with two slightly different strippers. */
-function htmlToMd(html) {
+function htmlToMd(html, base) {
   const txt = (h) => h.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  /* A relative href is worthless to the caller: "get me the download link"
+   * cannot be answered with `download-macosx.html`. Resolve against the URL
+   * curl actually ended on, so every link leaves here usable. */
+  const abs = (href) => {
+    if (!base || /^(https?:|data:|mailto:|tel:|javascript:|#)/i.test(href)) return href;
+    try { return new URL(href, base).href; } catch { return href; }
+  };
   let s = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -297,7 +304,7 @@ function htmlToMd(html) {
   s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, l, t) => '\n\n' + '#'.repeat(+l) + ' ' + txt(t) + '\n\n');
   s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, t) => '\n- ' + txt(t));
   s = s.replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
-    (_, h, t) => { const x = txt(t); return x ? `[${x}](${h})` : ''; });
+    (_, h, t) => { const x = txt(t); return x ? `[${x}](${abs(h)})` : ''; });
   s = s.replace(/<(p|div|br|section|article|header|main|table|tr|h[1-6])[^>]*>/gi, '\n');
   s = s.replace(/<[^>]+>/g, ' ');
   s = s.replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
@@ -333,22 +340,24 @@ function tryL1() {
   const timeout = withBudget(L1_TIMEOUT);
   const r = sh('curl', [
     '-sL', '--compressed', '-m', String(timeout), '-A', UA,
-    '-w', '\n__SWR__%{http_code} %{content_type}', url,
+    '-w', '\n__SWR__%{http_code} %{content_type} %{url_effective}', url,
   ], timeout);
   if (r.code !== 0) return { fail: ['curl-exit-' + r.code + (r.err ? ':' + firstLine(r.err) : '')] };
   // Trailer, not first match: a page is allowed to contain our marker text.
   const i = r.out.lastIndexOf('\n__SWR__');
   if (i < 0) return { fail: ['curl-no-meta'] };
-  const m = r.out.slice(i + 8).match(/^(\d{3})\s*(\S*)/);
+  const m = r.out.slice(i + 8).match(/^(\d{3})\s*(\S*)\s*(\S*)/);
   if (!m) return { fail: ['curl-no-meta'] };
   const httpCode = +m[1];
+  // Links resolve against where the redirects actually landed, not where we aimed.
+  const finalUrl = m[3] || url;
   const raw = r.out.slice(0, i);
   // The server already said what this is. Ask it instead of guessing — running
   // an HTML stripper over JSON silently eats every "a < b" it finds.
   const isHtml = m[2]
     ? /html|xml/i.test(m[2])
     : /<html|<!doctype html|<body/i.test(raw.slice(0, 2000));
-  const body = isHtml ? htmlToMd(raw) : raw;
+  const body = isHtml ? htmlToMd(raw, finalUrl) : raw;
   const reasons = notContent(isHtml ? raw : body, httpCode, body.length, isHtml ? 'html' : 'api');
   return { httpCode, body, reasons, blocked: reasons.length > 0 };
 }
@@ -408,7 +417,7 @@ function tryL2L3(sid) {
     const rd = shOpencli([
       'browser', sid, 'get', 'html', '--selector', 'main, article, [role=main]', '--as', 'html',
     ], withBudget(DOM_TIMEOUT));
-    const dom = rd.code === 0 ? htmlToMd(rd.out) : '';
+    const dom = rd.code === 0 ? htmlToMd(rd.out, url) : '';
     if (dom.length > 200) return { kind: 'md', body: dom };
     tlog(`L2 DOM landmark thin (${dom.length}b) → L3 network capture`);
 

@@ -34,6 +34,11 @@ http.createServer((req,res)=>{
   // this silently turns "a < b and c > d" into "a d" and still exits 0.
   if(req.url==='/api'){res.writeHead(200,{"content-type":"application/json"});
     return res.end('{"title":"a < b and c > d","html":"<b>bold</b>","n":5}');}
+  // Relative hrefs: "get me the download link" is unanswerable with 'dl/mac.html'.
+  if(req.url==='/links') return b('<h1>Downloads</h1><p>Get it for '+
+    '<a href="dl/mac.html">Mac</a> or <a href="/dl/win.html">Windows</a>, '+
+    'or read the <a href="https://elsewhere.example/docs">docs</a>. '+
+    'This page carries enough prose to clear the readability floor comfortably.</p>');
   // A long, valid article that merely MENTIONS a login and a 404. Content.
   if(req.url==='/mentions') return b('<h1>Guide</h1><p>'+'Real documentation body. '.repeat(120)+
     'If the dashboard shows 404 not found, please log in again.</p><p>'+'More prose. '.repeat(120)+'</p>');
@@ -96,6 +101,10 @@ r "$BASE/json"
 r "$BASE/api"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *'"a < b and c > d"'* ]] && [[ "$R_OUT" == *'"<b>bold</b>"'* ]]
   check "JSON survives verbatim   " 1 "$(is && echo 1 || echo 0)"
+r "$BASE/links"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"($BASE/dl/mac.html)"* ]] && [[ "$R_OUT" == *"($BASE/dl/win.html)"* ]] \
+    && [[ "$R_OUT" == *"(https://elsewhere.example/docs)"* ]]
+  check "links come out absolute  " 1 "$(is && echo 1 || echo 0)"
 r "$BASE/mentions"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"Real documentation body"* ]]
   check "long page: mention != wall" 1 "$(is && echo 1 || echo 0)"
