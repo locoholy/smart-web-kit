@@ -39,6 +39,12 @@ http.createServer((req,res)=>{
     '<a href="dl/mac.html">Mac</a> or <a href="/dl/win.html">Windows</a>, '+
     'or read the <a href="https://elsewhere.example/docs">docs</a>. '+
     'This page carries enough prose to clear the readability floor comfortably.</p>');
+  // A linked table row: nested tags inside <a>/<h*>/<li> must separate the
+  // cells, not fuse "$9.64" + "72,060" + "70" into one run of digits.
+  if(req.url==='/cells') return b('<h1>Board</h1><table><tr><td>'+
+    '<a href="/m/1"><span>1</span><span>Fable</span><span>73.4%</span>'+
+    '<span>$9.64</span><span>72,060</span><span>70</span></a></td></tr></table>'+
+    '<p>'+'Padding prose to clear the readability floor. '.repeat(20)+'</p>');
   // A long, valid article that merely MENTIONS a login and a 404. Content.
   if(req.url==='/mentions') return b('<h1>Guide</h1><p>'+'Real documentation body. '.repeat(120)+
     'If the dashboard shows 404 not found, please log in again.</p><p>'+'More prose. '.repeat(120)+'</p>');
@@ -105,6 +111,9 @@ r "$BASE/links"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"($BASE/dl/mac.html)"* ]] && [[ "$R_OUT" == *"($BASE/dl/win.html)"* ]] \
     && [[ "$R_OUT" == *"(https://elsewhere.example/docs)"* ]]
   check "links come out absolute  " 1 "$(is && echo 1 || echo 0)"
+r "$BASE/cells"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"1 Fable 73.4% \$9.64 72,060 70"* ]]
+  check "nested cells stay apart  " 1 "$(is && echo 1 || echo 0)"
 r "$BASE/mentions"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"Real documentation body"* ]]
   check "long page: mention != wall" 1 "$(is && echo 1 || echo 0)"

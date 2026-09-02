@@ -288,7 +288,10 @@ function googleSearchState(html) {
  * Also the readability measure: we convert once and judge the result, instead
  * of stripping the same HTML twice with two slightly different strippers. */
 function htmlToMd(html, base) {
-  const txt = (h) => h.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  /* A tag is a boundary between two pieces of text, so it becomes a space.
+   * Deleting it instead fuses the cells of a linked table row into one run of
+   * digits — "$9.64", "72,060" and "70" arrive as "9.6472,060 70". */
+  const txt = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   /* A relative href is worthless to the caller: "get me the download link"
    * cannot be answered with `download-macosx.html`. Resolve against the URL
    * curl actually ended on, so every link leaves here usable. */
