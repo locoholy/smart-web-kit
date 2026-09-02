@@ -322,6 +322,37 @@ function htmlToMd(html, base) {
   return s.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').replace(/^\s+|\s+$/g, '') + '\n';
 }
 
+/* Responsive pages ship the same content twice — one copy for wide screens,
+ * one for narrow — and hide one with CSS. We read the DOM, not the rendering,
+ * so both copies arrive. Find the largest chunk that occurs twice and drop the
+ * second. HTML only: a JSON payload repeats its own structure by nature, and
+ * cutting a "duplicate" out of it deletes records while still parsing. */
+const DUP_MIN_SHARE = 0.15; // a repeat this large is structural, not prose
+function dropRepeatedBlock(text) {
+  for (let pass = 0; pass < 3; pass++) {
+    const n = text.length;
+    if (n < 2000) break;
+    let cut = null;
+    // The duplicate can start anywhere, so probe at several depths.
+    for (const frac of [0.25, 0.4, 0.55, 0.1]) {
+      const a = Math.floor(n * frac);
+      const anchor = text.slice(a, a + 120);
+      if (anchor.trim().length < 60) continue;
+      const p2 = text.indexOf(anchor, a + 120);
+      if (p2 < 0) continue;
+      let fwd = 0;
+      while (p2 + fwd < n && text[a + fwd] === text[p2 + fwd]) fwd++;
+      let back = 0;
+      while (a - back - 1 >= 0 && p2 - back - 1 > a + fwd
+             && text[a - back - 1] === text[p2 - back - 1]) back++;
+      if ((fwd + back) / n >= DUP_MIN_SHARE) { cut = [p2 - back, p2 - back + fwd + back]; break; }
+    }
+    if (!cut) break;
+    text = text.slice(0, cut[0]) + text.slice(cut[1]);
+  }
+  return text;
+}
+
 /* Returns the list of reasons this body is not readable content. Empty = ship it. */
 function notContent(body, httpCode, textLen, mode) {
   const reasons = [];
@@ -372,7 +403,7 @@ function tryL1() {
     : /<html|<!doctype html|<body/i.test(raw.slice(0, 2000));
   const body = isHtml ? htmlToMd(raw, finalUrl) : raw;
   const reasons = notContent(isHtml ? raw : body, httpCode, body.length, isHtml ? 'html' : 'api');
-  return { httpCode, body, reasons, blocked: reasons.length > 0 };
+  return { httpCode, body, reasons, isHtml, blocked: reasons.length > 0 };
 }
 
 /* ---------- L3 helpers: network JSON capture ---------- */
@@ -457,8 +488,19 @@ function tryL2L3(sid) {
 function stripJunk(md) {
   return md.replace(/!\[[^\]]*\]\(data:[^)]+\)/g, '').replace(/\]\((data:[^)]+)\)/g, '](stripped-data-uri)');
 }
-function emit(source, body) {
+/* `markup` = the body came from a rendered page, so a repeated block is a
+ * second responsive copy and can go. Deduping is a token-economy step, run
+ * after the content decision — never before it, or trimming a repetitive page
+ * could flip it into looking like a wall. */
+function emit(source, body, markup) {
   body = stripJunk(body);
+  if (markup) {
+    const before = body.length;
+    body = dropRepeatedBlock(body);
+    if (body.length < before) {
+      tlog(`dropped a duplicate copy of the page (-${Math.round(100 * (before - body.length) / before)}%)`);
+    }
+  }
   tlog(`${source} ok → ${body.length}b to stdout`);
   if (asJson) {
     console.log(JSON.stringify({ url, source, elapsed_ms: elapsedMs(), content: body }));
@@ -472,7 +514,7 @@ const l1 = tryL1();
 // exit 0 on L1 ONLY when the fetch returned real content — any
 // not-content marker (404/login/antibot/JS-wall/SPA) blocks success.
 if (!l1.fail && !l1.blocked) {
-  emit('L1', l1.body);
+  emit('L1', l1.body, l1.isHtml);
   process.exit(0);
 }
 // A malformed request or a definitively absent resource cannot become readable
@@ -518,4 +560,4 @@ if (l2Reasons.length) {
   tlog('failed: escalation returned a wall, not content (' + l2Reasons.join(', ') + ')');
   process.exit(1);
 }
-emit(result.kind === 'json' ? 'L3' : 'L2', result.body);
+emit(result.kind === 'json' ? 'L3' : 'L2', result.body, result.kind !== 'json');
