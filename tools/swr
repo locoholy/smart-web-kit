@@ -256,16 +256,23 @@ function releaseLock(lock) { if (lock) { try { fs.unlinkSync(lock.path); } catch
  *   text — L2 extracted text: markers only, no tags left to inspect
  *   api  — non-HTML payload (JSON/XML/plain): the HTTP status is the authority
  */
+/* Hard means the string cannot occur outside the wall's own markup: vendor
+ * fingerprints, not English. Anything a person could write in an article about
+ * blocking belongs in SOFT, where the length guard decides. A page whose style
+ * rules say bodily-metaphor emotions are "Banned." is not a ban, and the bare
+ * /banned/ that used to live here threw away 18 KB of it. */
 const HARD_MARKERS = [
-  ['cloudflare-challenge', /just a moment|cf-challenge|challenge-platform|attention required|cf-browser-verification|cf_chl/i],
-  ['antibot', /perimeterx|px-captcha|captcha-delivery|datadome|geetest|\bcaptcha\b|are you a robot|verify you are human/i],
-  ['denied', /access denied|you have been blocked|request blocked|unusual traffic|banned/i],
+  ['cloudflare-challenge', /cf-challenge|challenge-platform|cf-browser-verification|cf_chl/i],
+  ['antibot', /perimeterx|px-captcha|captcha-delivery|datadome|geetest/i],
   ['search-wall-signal', /(?:[?&]|&amp;)emsg=/i],
 ];
 /* [name, text ceiling, pattern] — fires only when the body has less readable
  * text than the ceiling. This is what stops a long, valid page from being
  * thrown away because one sentence inside it mentions a login or a 404. */
 const SOFT_MARKERS = [
+  ['cloudflare-wall', 2000, /just a moment|attention required/i],
+  ['antibot-wall', 2000, /\bcaptcha\b|are you a robot|verify you are human/i],
+  ['denied', 2000, /access denied|you have been blocked|request blocked|unusual traffic|\bbanned\b/i],
   ['login-wall', 2000, /sign in to continue|log ?in to continue|please log ?in|please sign in/i],
   ['js-required', 2000, /enable javascript|enable cookies to|requires javascript/i],
   ['browser-error', 2000, /\bhttp error\s+\d{3}\b|\b404\b[\s-]*not found|the page you were looking|no such file|err_connection|err_name_not_resolved|err_ssl|getaddrinfo|connection refused|this site can.t be reached|refused to connect|не удается получить доступ|не удается установить соединение/i],
