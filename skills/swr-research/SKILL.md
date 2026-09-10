@@ -34,7 +34,10 @@ LLM for sorting, filtering, and comparison.
 
 Do not use `head`, first-screen snippets, or early price filters as evidence.
 Do not repeat a canonical URL, identical query, filter, or cursor. Google is a
-discovery fallback, never the primary catalog.
+discovery fallback, never the primary catalog. Never fetch a search-engine
+results page through `swr`, `curl`, or ad-hoc scripts: `swr` is a reader, not
+a searcher, and lands on the antibot wall. If the browser bridge is down
+(`swr doctor`, exit 4), report it instead of improvising extraction.
 
 Stop only when the source queue and every reachable pagination chain are
 exhausted, or when the user-defined time/cost limit is reached. In a partial
