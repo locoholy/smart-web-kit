@@ -30,8 +30,10 @@ Prerequisites: `node >= 18`, Chrome.
   (Chrome Web Store) and check `opencli doctor` — it must say
   `Extension: connected` (without it, Chrome escalation in `swr` cannot run;
   `swr doctor` checks this too). The extension runs **inside** Chrome, so the
-  ladder is only live while Chrome itself is open — a closed browser reads as
-  a disconnected extension.
+  ladder is only live while Chrome itself is open. `swr` handles that itself:
+  before escalating it checks the bridge, starts Chrome and restarts the
+  daemon if needed, and only then gives up (`SWR_BRIDGE_REPAIR=off` to
+  disable, `no-launch` to allow everything but starting Chrome).
 
 ```bash
 git clone https://github.com/<you>/smart-web-kit.git && cd smart-web-kit
@@ -60,7 +62,7 @@ per-agent adapters.
 ## The `swr` escalation ladder
 
 ```text
-L1  curl (5s)  ──ok──►  HTML → Markdown ──► exit 0
+L1  curl (15s)  ──ok──►  HTML → Markdown ──► exit 0
  │ fail score ≥ 1.0 (hard marker: 4xx/5xx, antibot, login wall, JS wall)
  ▼
 L2  opencli browser swr-<hash> open → extract (real Chrome, 20s)
@@ -117,12 +119,12 @@ new agent gets wired up in seconds, not per-agent ceremony.
 | 1 | page unreadable / real error (404, login wall, error page) | report "page unreadable", offer screenshot fallback |
 | 2 | bad usage | fix arguments |
 | 3 | timeout / session busy | retry once, then give up |
-| 4 | Chrome bridge down: opencli missing, Chrome closed, extension not connected | stderr names the fix (often "start Google Chrome"); relay it |
+| 4 | Chrome bridge down and unrepairable (`swr` starts Chrome and restarts the daemon first) | relay the line stderr printed — a human has to act |
 
 Configuration via env: `SWR_TOTAL_BUDGET` (seconds, default 45),
-`SWR_L1_TIMEOUT` (seconds, default 5), `SWR_BROWSER_WINDOW`
+`SWR_L1_TIMEOUT` (seconds, default 15), `SWR_BROWSER_WINDOW`
 (`background` by default; `foreground` only when requested), and
-`SWR_BROWSER=off` for L1-only runs.
+`SWR_BROWSER=off` for L1-only runs, `SWR_BRIDGE_REPAIR` (`on` / `no-launch` / `off`).
 
 ## Tests
 

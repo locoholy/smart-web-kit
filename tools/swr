@@ -15,6 +15,7 @@
  * Zero npm dependencies. Requires node >= 18. Config:
  *   SWR_TOTAL_BUDGET  total seconds budget (default 45)
  *   SWR_L1_TIMEOUT    L1 curl timeout seconds (default 15)
+ *   SWR_BRIDGE_REPAIR on (default) | no-launch (never start Chrome) | off
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -173,7 +174,8 @@ function cmdDoctor(flags) {
 }
 function tlog(m) { process.stderr.write(`[SWR] ${m} (${((Date.now() - T0) / 1000).toFixed(1)}s)\n`); }
 function elapsedMs() { return Date.now() - T0; }
-function remainingMs() { return Math.max(0, TOTAL_BUDGET_MS - elapsedMs()); }
+let budgetGrant = 0; // seconds spent reviving the bridge, given back to the read
+function remainingMs() { return Math.max(0, TOTAL_BUDGET_MS + budgetGrant - elapsedMs()); }
 /* Every process helper accepts seconds. Keep the total budget in milliseconds
  * for elapsed-time arithmetic, but convert it once at this boundary. */
 function withBudget(dfltSeconds) {
@@ -199,6 +201,39 @@ function chromeRunning() {
     if (sh('pgrep', ['-x', name], 3).code === 0) return true;
   }
   return false;
+}
+
+/* A broken tier reported politely is still a broken tier: the reader stops,
+ * and the agent goes around us. Both faults we can name have a known cure, so
+ * apply it and retry once before giving up on the ladder. */
+function repairBridge() {
+  const mode = process.env.SWR_BRIDGE_REPAIR || 'on';
+  if (mode === 'off') return bridgeFault(10);
+  const started = Date.now();
+  const cures = [];
+  // The extension lives in Chrome, so a closed Chrome is cured by Chrome.
+  // A sleeping one reattaches when the daemon comes back — worth trying either
+  // way, and cheap.
+  if (!chromeRunning() && mode !== 'no-launch' && process.platform === 'darwin') {
+    cures.push(['starting Google Chrome', () => sh('open', ['-g', '-a', 'Google Chrome'], 10)]);
+  }
+  cures.push(['restarting the opencli daemon', () => shOpencli(['daemon', 'restart'], 15)]);
+  for (const [what, run] of cures) {
+    tlog('bridge down → ' + what);
+    run();
+    for (let i = 0; i < 6; i++) {
+      sleepSync(1500);
+      if (!bridgeFault(10)) {
+        // Reviving the bridge is our own overhead, not this page's: hand the
+        // spent seconds back so the read still gets its full budget.
+        budgetGrant += Date.now() - started;
+        tlog('bridge back up');
+        return null;
+      }
+    }
+  }
+  budgetGrant += Date.now() - started;
+  return bridgeFault(10);
 }
 
 /* null when the Chrome bridge is usable, otherwise a one-line fix. */
@@ -578,6 +613,17 @@ if (shOpencli(['--version'], 5).code !== 0) {
   process.exit(4);
 }
 
+/* Check the bridge before spending a browser attempt on it: a dead bridge
+ * fails every tier below in a way that looks like the site's fault. */
+const preFault = bridgeFault(10);
+if (preFault) {
+  const stillBroken = repairBridge();
+  if (stillBroken) {
+    tErr('Chrome escalation unavailable — ' + stillBroken);
+    process.exit(4);
+  }
+}
+
 const sid = sessionId(url);
 const lock = acquireLock(sid);
 if (!lock) { tErr('session ' + sid + ' busy >' + LOCK_WAIT_MS / 1000 + 's, giving up'); process.exit(3); }
@@ -592,10 +638,8 @@ try {
 }
 
 if (!result) {
-  /* Escalation produced nothing. "The page is a wall" and "my browser is
-   * closed" are different answers with different fixes, and only the probe
-   * can tell them apart — the bridge is diagnosed here, on the way out, so a
-   * healthy read never pays for it. */
+  /* The bridge was up when we started; if it died mid-read, that is our
+   * failure, not the page's, and must not be reported as a wall. */
   const fault = bridgeFault(10);
   if (fault) {
     tErr('Chrome escalation never ran — ' + fault);

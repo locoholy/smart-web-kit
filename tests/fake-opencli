@@ -8,12 +8,20 @@ if [ "${1:-}" = "--version" ]; then exit 0; fi
 
 # The bridge probe. An installed opencli whose extension is unreachable (Chrome
 # closed, extension disabled) is the state that used to be indistinguishable
-# from an antibot wall.
-if [ "${1:-}" = "doctor" ]; then
-  if [ "${SWR_FAKE_NO_EXT:-}" = "1" ]; then echo "Extension: not connected"; else echo "Extension: connected"; fi
+# from an antibot wall. With SWR_FAKE_HEAL=1 a daemon restart revives it, the
+# way it does on a real machine.
+HEALED="${SWR_OPENCLI_LOG}.healed"
+down(){ [ "${SWR_FAKE_NO_EXT:-}" = "1" ] && [ ! -f "$HEALED" ]; }
+
+if [ "${1:-}" = "daemon" ] && [ "${2:-}" = "restart" ]; then
+  [ "${SWR_FAKE_HEAL:-}" = "1" ] && : > "$HEALED"
   exit 0
 fi
-if [ "${SWR_FAKE_NO_EXT:-}" = "1" ]; then
+if [ "${1:-}" = "doctor" ]; then
+  if down; then echo "Extension: not connected"; else echo "Extension: connected"; fi
+  exit 0
+fi
+if down; then
   echo "error: Chrome extension not connected" >&2
   exit 1
 fi

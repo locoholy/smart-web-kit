@@ -36,4 +36,4 @@ If `swr` is missing: ask the user to install smart-web-kit
 | 1 | page unreadable / real error (404, login wall, Chrome error page) | say so; offer `swr` retry or screenshot |
 | 2 | bad usage | fix your arguments |
 | 3 | timeout / session busy | retry **once**, then give up |
-| 4 | Chrome bridge down: opencli missing, Chrome closed, or extension not connected | stderr already names the fix — most often "start Google Chrome". Relay it and retry once the user does |
+| 4 | Chrome bridge down and `swr` could not revive it (it starts Chrome and restarts the daemon on its own) | a human has to act: relay the line stderr printed, verbatim |

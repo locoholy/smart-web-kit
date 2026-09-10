@@ -91,8 +91,14 @@ r_browser_mention(){ # A long L2 page that merely mentions a 404 is still conten
   R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_FAKE_MENTION=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
 }
 
-r_browser_nobridge(){ # Bridge down (Chrome closed / extension off) is not a wall.
-  R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_FAKE_NO_EXT=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
+r_browser_nobridge(){ # Bridge down and unrepairable is not a wall: exit 4.
+  rm -f "$TMP/opencli.log.healed"
+  R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_BRIDGE_REPAIR=off SWR_FAKE_NO_EXT=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
+}
+
+r_browser_heal(){ # A dead bridge must be revived and the read finished, not reported.
+  rm -f "$TMP/opencli.log.healed"
+  R_OUT=$(SWR_TOTAL_BUDGET=30 SWR_BRIDGE_REPAIR=no-launch SWR_FAKE_NO_EXT=1 SWR_FAKE_HEAL=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
 }
 
 r_browser_l3(){ # L3 must read only a first-party API response.
@@ -168,6 +174,9 @@ r_browser_error "$BASE/gwall"
   [ "$R_CODE" = 1 ];                       check "live bridge + wall -> 1  " 1 "$(is && echo 1 || echo 0)"
 r_browser_nobridge "$BASE/gwall"
   [ "$R_CODE" = 4 ] && [ -z "$R_OUT" ];    check "bridge down -> exit 4    " 1 "$(is && echo 1 || echo 0)"
+r_browser_heal "$BASE/gwall"
+  [ "$R_CODE" = 0 ] && [ -n "$R_OUT" ];    check "bridge repaired -> read  " 1 "$(is && echo 1 || echo 0)"
+  grep -F "daemon restart" "$TMP/opencli.log" >/dev/null; check "repair restarts daemon " 1 "$(is && echo 1 || echo 0)"
 r_browser_dom "$BASE/gwall"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"DOM fallback"* ]]; check "thin extract -> DOM read " 1 "$(is && echo 1 || echo 0)"
   grep -F "get html --selector main, article, [role=main] --as html" "$TMP/opencli.log" >/dev/null; check "DOM landmark contract  " 1 "$(is && echo 1 || echo 0)"
