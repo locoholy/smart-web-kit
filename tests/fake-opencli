@@ -6,6 +6,18 @@ printf '%s\n' "$*" >> "$SWR_OPENCLI_LOG"
 
 if [ "${1:-}" = "--version" ]; then exit 0; fi
 
+# The bridge probe. An installed opencli whose extension is unreachable (Chrome
+# closed, extension disabled) is the state that used to be indistinguishable
+# from an antibot wall.
+if [ "${1:-}" = "doctor" ]; then
+  if [ "${SWR_FAKE_NO_EXT:-}" = "1" ]; then echo "Extension: not connected"; else echo "Extension: connected"; fi
+  exit 0
+fi
+if [ "${SWR_FAKE_NO_EXT:-}" = "1" ]; then
+  echo "error: Chrome extension not connected" >&2
+  exit 1
+fi
+
 case "${3:-}" in
   open|close) exit 0 ;;
   extract)

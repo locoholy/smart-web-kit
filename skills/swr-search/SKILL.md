@@ -26,8 +26,11 @@ source, opening an identified page, or verifying a fact. If the work requires
 collecting data from several sources, hand off to `swr-research` before making
 claims.
 
-When `swr` exits 1 (antibot wall, real error) or 4 (bridge down), run
-`swr doctor` and name the broken tier instead of working around it.
+When `swr` exits 1 (antibot wall, real error) or 4 (bridge down), name the
+broken tier instead of working around it. Exit 4 carries its own fix on
+stderr, and that fix is usually "start Google Chrome" — the browser tier
+lives inside the user's Chrome, so a closed browser disables it. Relay the
+line, do not diagnose past it.
 Hand-written HTTP calls, python fetch one-liners, and raw curl are not
 fallbacks — they are the symptom of a broken cascade. A dead tier does not
 end the lookup: while native search works, keep the search → `swr` read loop

@@ -9,7 +9,8 @@
  * stdout: clean Markdown (default) or JSON envelope (--json) — nothing else.
  * stderr: one-line telemetry events.
  *
- * Exit codes: 0 ok | 1 gave up | 2 usage | 3 timeout/busy | 4 opencli missing
+ * Exit codes: 0 ok | 1 gave up | 2 usage | 3 timeout/busy | 4 Chrome bridge
+ * down (opencli missing, Chrome closed, or extension not connected)
  *
  * Zero npm dependencies. Requires node >= 18. Config:
  *   SWR_TOTAL_BUDGET  total seconds budget (default 45)
@@ -155,24 +156,13 @@ function cmdDoctor(flags) {
   chromePaths.forEach((p) => { if (fs.existsSync(p)) chromeOk = true; });
   // The real gate for L2/L3 is the Chrome bridge: daemon + the OpenCLI Chrome
   // extension. `opencli --version` alone says nothing about it. Probe it.
-  let extOk = null; // null = unknown/not reported, true = connected, false = missing
-  if (opencliOk) {
-    const dr = shOpencli(['doctor'], 20);
-    const blob = (dr.out || '') + '\n' + (dr.err || '');
-    const m = blob.match(/Extension:\s*([^\n]+)/i);
-    if (dr.code === 0 && m) extOk = !/not connected|fail|error|missing|disconnected/i.test(m[1]);
-    else if (dr.code !== 0) extOk = false;
-  }
-  const ready = opencliOk && chromeOk && extOk !== false;
-  tErr('opencli:   ' + (opencliOk ? 'found' : 'MISSING — Chrome escalation off'));
-  tErr('chrome:    ' + (chromeOk ? 'found' : 'MISSING — Chrome escalation off'));
-  if (opencliOk) {
-    if (extOk === true) tErr('extension: connected (opencli doctor)');
-    else if (extOk === false) tErr('extension: NOT connected — install the OpenCLI Chrome extension (Chrome Web Store) and run `opencli doctor`');
-    else tErr('extension: unknown (opencli doctor did not report a status — still runs full ladder)');
-  }
+  const fault = opencliOk ? bridgeFault(20) : null;
+  const ready = opencliOk && chromeOk && !fault;
+  tErr('opencli:   ' + (opencliOk ? 'found' : 'MISSING — install it: npm i -g @jackwener/opencli'));
+  tErr('chrome:    ' + (chromeOk ? 'found' : 'MISSING — install Google Chrome'));
+  if (opencliOk) tErr('bridge:    ' + (fault ? 'DOWN — ' + fault : 'connected'));
   if (!ready) {
-    tErr('swr is NOT ready for full escalation. Install + authorize OpenCLI (npm i -g @jackwener/opencli, add the OpenCLI Chrome extension, then `opencli doctor`) and install Google Chrome. Basic L1 curl still works without them.');
+    tErr('swr is NOT ready for full escalation. Fix the line marked above; without it only L1 curl works.');
   } else {
     tErr('swr is ready: full L1→L2→L3 ladder available');
   }
@@ -196,6 +186,31 @@ function sh(cmd, args2, timeoutS) {
   return { code: r.status === null ? 124 : r.status, out: r.stdout || '', err: r.stderr || '' };
 }
 function shOpencli(args2, timeoutS) { return sh(OPENCLI_BIN, args2, timeoutS); }
+
+/* The OpenCLI extension lives INSIDE Chrome. With the browser closed the
+ * daemon still listens and nobody ever connects, which looks identical to a
+ * missing extension — and sends the reader off reinstalling what already
+ * works. Ask the process table which of the two it is. */
+function chromeRunning() {
+  for (const name of ['Google Chrome', 'chrome', 'chromium', 'chromium-browser']) {
+    if (sh('pgrep', ['-x', name], 3).code === 0) return true;
+  }
+  return false;
+}
+
+/* null when the Chrome bridge is usable, otherwise a one-line fix. */
+function bridgeFault(timeoutS) {
+  const dr = shOpencli(['doctor'], timeoutS);
+  const blob = (dr.out || '') + '\n' + (dr.err || '');
+  const m = blob.match(/Extension:\s*([^\n]+)/i);
+  // No status line at all: opencli is too old to report it — assume usable
+  // rather than block the ladder on a probe that cannot answer.
+  if (dr.code === 0 && !m) return null;
+  if (dr.code === 0 && !/not connected|fail|error|missing|disconnected/i.test(m[1])) return null;
+  return chromeRunning()
+    ? 'Chrome runs but the OpenCLI extension is not connected: install or enable it (Chrome Web Store), then run `opencli doctor`'
+    : 'Chrome is not running, and the extension lives inside it: start Google Chrome, then retry';
+}
 
 /* ---------- opencli session lifecycle (zero orphan tabs) ---------- */
 let openSession = null; // tab lease currently held by this process
@@ -570,6 +585,15 @@ try {
 }
 
 if (!result) {
+  /* Escalation produced nothing. "The page is a wall" and "my browser is
+   * closed" are different answers with different fixes, and only the probe
+   * can tell them apart — the bridge is diagnosed here, on the way out, so a
+   * healthy read never pays for it. */
+  const fault = bridgeFault(10);
+  if (fault) {
+    tErr('Chrome escalation never ran — ' + fault);
+    process.exit(4);
+  }
   tlog('gave up: no readable content via L1/L2/L3');
   process.exit(1);
 }

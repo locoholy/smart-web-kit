@@ -86,6 +86,10 @@ r_browser_mention(){ # A long L2 page that merely mentions a 404 is still conten
   R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_FAKE_MENTION=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
 }
 
+r_browser_nobridge(){ # Bridge down (Chrome closed / extension off) is not a wall.
+  R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_FAKE_NO_EXT=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
+}
+
 r_browser_l3(){ # L3 must read only a first-party API response.
   R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_FAKE_L3=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
 }
@@ -152,6 +156,9 @@ r_browser "$BASE/gwall"
   grep -F "open $BASE/gwall --window background" "$TMP/opencli.log" >/dev/null; check "L2 opens background    " 1 "$(is && echo 1 || echo 0)"
 r_browser_error "$BASE/gwall"
   [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ];   check "Chrome HTTP error -> empty" 1 "$(is && echo 1 || echo 0)"
+  [ "$R_CODE" = 1 ];                       check "live bridge + wall -> 1  " 1 "$(is && echo 1 || echo 0)"
+r_browser_nobridge "$BASE/gwall"
+  [ "$R_CODE" = 4 ] && [ -z "$R_OUT" ];    check "bridge down -> exit 4    " 1 "$(is && echo 1 || echo 0)"
 r_browser_dom "$BASE/gwall"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"DOM fallback"* ]]; check "thin extract -> DOM read " 1 "$(is && echo 1 || echo 0)"
   grep -F "get html --selector main, article, [role=main] --as html" "$TMP/opencli.log" >/dev/null; check "DOM landmark contract  " 1 "$(is && echo 1 || echo 0)"

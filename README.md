@@ -29,7 +29,9 @@ Prerequisites: `node >= 18`, Chrome.
   `npm install -g @jackwener/opencli`, then add the **OpenCLI Chrome extension**
   (Chrome Web Store) and check `opencli doctor` — it must say
   `Extension: connected` (without it, Chrome escalation in `swr` cannot run;
-  `swr doctor` checks this too).
+  `swr doctor` checks this too). The extension runs **inside** Chrome, so the
+  ladder is only live while Chrome itself is open — a closed browser reads as
+  a disconnected extension.
 
 ```bash
 git clone https://github.com/<you>/smart-web-kit.git && cd smart-web-kit
@@ -115,7 +117,7 @@ new agent gets wired up in seconds, not per-agent ceremony.
 | 1 | page unreadable / real error (404, login wall, error page) | report "page unreadable", offer screenshot fallback |
 | 2 | bad usage | fix arguments |
 | 3 | timeout / session busy | retry once, then give up |
-| 4 | opencli unavailable (escalation needed) | run `swr doctor`, ask user |
+| 4 | Chrome bridge down: opencli missing, Chrome closed, extension not connected | stderr names the fix (often "start Google Chrome"); relay it |
 
 Configuration via env: `SWR_TOTAL_BUDGET` (seconds, default 45),
 `SWR_L1_TIMEOUT` (seconds, default 5), `SWR_BROWSER_WINDOW`
