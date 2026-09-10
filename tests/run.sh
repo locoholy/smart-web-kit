@@ -29,6 +29,11 @@ const http=require('http');
 http.createServer((req,res)=>{
   const b=(s)=>setTimeout(()=>{res.writeHead(200,{"content-type":"text/html; charset=utf8"});res.end(s)},30);
   if(req.url==='/ok')    return b('<h1>Hello World</h1><p>This is a real page.</p>');
+  // A search-result link is a redirector: the answer must cite where it landed,
+  // not the wrapper, and query params must survive the hop.
+  if(req.url.startsWith('/go?')){res.writeHead(302,{location:'/landed?t=123&p=456'});return res.end();}
+  if(req.url.startsWith('/landed')) return b('<h1>Landed</h1><p>Query was '+
+    req.url.split('?')[1]+'. This page carries enough prose to clear the readability floor.</p>');
   if(req.url==='/json')  return b('{"key":"value","ok":true}');
   // Served as JSON: must reach stdout byte-for-byte. An HTML stripper run over
   // this silently turns "a < b and c > d" into "a d" and still exits 0.
@@ -114,6 +119,10 @@ r "$BASE/ok"
 r "$BASE/json"
   [ "$R_CODE" = 0 ] && [ -n "$R_OUT" ];    check "short JSON is content    " 1 "$(is && echo 1 || echo 0)"
 
+R_OUT=$(SWR_BROWSER=off SWR_TOTAL_BUDGET=5 "$SWR" --json "$BASE/go?u=x" 2>/dev/null); R_CODE=$?
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *'"final_url":"'"$BASE"'/landed?t=123&p=456"'* ]] \
+    && [[ "$R_OUT" == *'Query was t=123&p=456'* ]]
+  check "redirect: final url + qs" 1 "$(is && echo 1 || echo 0)"
 r "$BASE/api"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *'"a < b and c > d"'* ]] && [[ "$R_OUT" == *'"<b>bold</b>"'* ]]
   check "JSON survives verbatim   " 1 "$(is && echo 1 || echo 0)"

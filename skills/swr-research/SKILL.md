@@ -28,7 +28,7 @@ results page through `swr`, `curl`, or ad-hoc scripts — `swr` is a reader,
 not a searcher, and lands on the antibot wall. Add each canonical source URL
 once to a queue.
 3. For every source, prefer its catalog, native search, sitemap, API, and
-pagination/cursors over a search engine. Read every reachable result page.
+pagination/cursors over a search engine.
 4. Retain every raw record and source URL. Record missing fields as `unknown`;
 do not infer a subscription, price, duration, or seller type.
 5. Normalize only after collection: currency, time period, product variant,
@@ -36,14 +36,22 @@ seller, availability, and duplicates. Then give the complete dataset to the
 LLM for sorting, filtering, and comparison.
 
 Do not use `head`, first-screen snippets, or early price filters as evidence.
-Do not repeat a canonical URL, identical query, filter, or cursor. Google is a
+Do not re-run a canonical URL, query, filter, or cursor that already paid out
+(retrying a transient failure is not a repeat). Google is a
 discovery fallback, never the primary catalog. If the browser bridge is down
 (exit 4), relay the fix `swr` printed — usually "start Google Chrome" —
 instead of improvising extraction.
 
-Stop only when the source queue and every reachable pagination chain are
-exhausted, or when the user-defined time/cost limit is reached. In a partial
-result, list unvisited sources and why; never call it exhaustive.
+Two jobs live here, and they stop differently. When the user asked for
+completeness — every offer in a catalog, the whole inventory — stop only when
+the source queue and every reachable pagination chain are exhausted. When the
+user asked to understand something, stop when the question is answered: keep
+pulling while you can name what is still unknown, chase the contradictions
+and the explanations that would refute your reading, and end when the answer
+rests on sources you opened. Depth is not page count; an extra page that
+changes nothing is not depth.
+
+In a partial result, list unvisited sources and why; never call it exhaustive.
 
 Return the raw dataset or a compact table with source URL for every record,
 then answer the user's selection question from that dataset. Include a

@@ -83,7 +83,13 @@ function cmdInit() {
     for (const sk of INIT_SKILLS) {
       const skillDir = path.join(root, sk.dir);
       fs.mkdirSync(skillDir, { recursive: true });
-      fs.copyFileSync(sk.source, path.join(skillDir, 'SKILL.md'));
+      /* Write beside the target, then rename: a reader (another `swr`, or the
+       * agent loading the skill) sees either the old file or the new one, and
+       * never the half-written middle. */
+      const target = path.join(skillDir, 'SKILL.md');
+      const tmp = target + '.' + process.pid + '.tmp';
+      fs.copyFileSync(sk.source, tmp);
+      fs.renameSync(tmp, target);
     }
     tErr('init: 3 skills → ' + root);
   }
@@ -127,15 +133,8 @@ function cmdDoctor(flags) {
           synced = false;
           continue;
         }
-        let matches = fs.existsSync(sk.source)
+        const matches = fs.existsSync(sk.source)
           && fs.readFileSync(sk.source, 'utf8') === fs.readFileSync(target, 'utf8');
-        if (!matches) {
-          /* A concurrent `swr init` mid-write shows as a transient mismatch;
-           * re-read once before declaring the root stale. */
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-          matches = fs.existsSync(sk.source)
-            && fs.readFileSync(sk.source, 'utf8') === fs.readFileSync(target, 'utf8');
-        }
         if (!matches) tErr('skill ' + sk.dir + ' @ ' + root + ': OUT OF SYNC — run `swr init`');
         synced &&= matches;
       }
@@ -439,7 +438,7 @@ function tryL1() {
     : /<html|<!doctype html|<body/i.test(raw.slice(0, 2000));
   const body = isHtml ? htmlToMd(raw, finalUrl) : raw;
   const reasons = notContent(isHtml ? raw : body, httpCode, body.length, isHtml ? 'html' : 'api');
-  return { httpCode, body, reasons, isHtml, blocked: reasons.length > 0 };
+  return { httpCode, body, reasons, isHtml, finalUrl, blocked: reasons.length > 0 };
 }
 
 /* ---------- L3 helpers: network JSON capture ---------- */
@@ -528,7 +527,7 @@ function stripJunk(md) {
  * second responsive copy and can go. Deduping is a token-economy step, run
  * after the content decision — never before it, or trimming a repetitive page
  * could flip it into looking like a wall. */
-function emit(source, body, markup) {
+function emit(source, body, markup, finalUrl) {
   body = stripJunk(body);
   if (markup) {
     const before = body.length;
@@ -539,7 +538,11 @@ function emit(source, body, markup) {
   }
   tlog(`${source} ok → ${body.length}b to stdout`);
   if (asJson) {
-    console.log(JSON.stringify({ url, source, elapsed_ms: elapsedMs(), content: body }));
+    /* `url` is what we were handed, which for a search-result link is a
+     * redirector. The caller needs the page it actually landed on — to cite
+     * it, and to build the next URL against the right host. */
+    const landed = finalUrl && finalUrl !== url ? { final_url: finalUrl } : {};
+    console.log(JSON.stringify({ url, ...landed, source, elapsed_ms: elapsedMs(), content: body }));
   } else {
     console.log(body);
   }
@@ -550,7 +553,7 @@ const l1 = tryL1();
 // exit 0 on L1 ONLY when the fetch returned real content — any
 // not-content marker (404/login/antibot/JS-wall/SPA) blocks success.
 if (!l1.fail && !l1.blocked) {
-  emit('L1', l1.body, l1.isHtml);
+  emit('L1', l1.body, l1.isHtml, l1.finalUrl);
   process.exit(0);
 }
 // A malformed request or a definitively absent resource cannot become readable
