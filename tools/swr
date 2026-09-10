@@ -14,7 +14,7 @@
  *
  * Zero npm dependencies. Requires node >= 18. Config:
  *   SWR_TOTAL_BUDGET  total seconds budget (default 45)
- *   SWR_L1_TIMEOUT    L1 curl timeout seconds (default 5)
+ *   SWR_L1_TIMEOUT    L1 curl timeout seconds (default 15)
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -24,7 +24,11 @@ const crypto = require('crypto');
 
 const VERSION = '1.5.0';
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-const L1_TIMEOUT = parseInt(process.env.SWR_L1_TIMEOUT || '5', 10);
+/* A cold vendor page can take ~5s to answer. At a 5s ceiling that page became
+ * a "failed" fetch, then an expensive Chrome escalation, then — if the bridge
+ * happened to be down — a hard error, all for a page plain curl reads fine.
+ * Waiting is the cheapest tier we have; spend the budget here. */
+const L1_TIMEOUT = parseInt(process.env.SWR_L1_TIMEOUT || '15', 10);
 const OPEN_TIMEOUT = 20;
 const EXTRACT_TIMEOUT = 20;
 const DOM_TIMEOUT = 5;
