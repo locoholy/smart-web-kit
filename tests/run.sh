@@ -39,6 +39,12 @@ http.createServer((req,res)=>{
     '<a href="dl/mac.html">Mac</a> or <a href="/dl/win.html">Windows</a>, '+
     'or read the <a href="https://elsewhere.example/docs">docs</a>. '+
     'This page carries enough prose to clear the readability floor comfortably.</p>');
+  if(req.url==='/nested-links') return b('<h2><a href="/heading">Downloads</a></h2>'+
+    '<ul><li><a href="/app.deb"><span>Linux</span></a></li></ul>'+
+    '<nav>Navigation boilerplate<a href="/catalog">Catalog</a></nav>'+
+    '<footer><a href="/docs">Docs</a></footer>'+
+    '<aside><a href="/other">Other platforms</a></aside>'+
+    '<p>This page carries enough prose to clear the readability floor comfortably.</p>');
   // A linked table row: nested tags inside <a>/<h*>/<li> must separate the
   // cells, not fuse "$9.64" + "72,060" + "70" into one run of digits.
   if(req.url==='/cells') return b('<h1>Board</h1><table><tr><td>'+
@@ -111,6 +117,14 @@ r "$BASE/links"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"($BASE/dl/mac.html)"* ]] && [[ "$R_OUT" == *"($BASE/dl/win.html)"* ]] \
     && [[ "$R_OUT" == *"(https://elsewhere.example/docs)"* ]]
   check "links come out absolute  " 1 "$(is && echo 1 || echo 0)"
+r "$BASE/nested-links"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"[Downloads]($BASE/heading)"* ]] \
+    && [[ "$R_OUT" == *"[Linux]($BASE/app.deb)"* ]] \
+    && [[ "$R_OUT" == *"[Catalog]($BASE/catalog)"* ]] \
+    && [[ "$R_OUT" == *"[Docs]($BASE/docs)"* ]] \
+    && [[ "$R_OUT" == *"[Other platforms]($BASE/other)"* ]] \
+    && [[ "$R_OUT" != *"Navigation boilerplate"* ]]
+  check "nested/navigation links  " 1 "$(is && echo 1 || echo 0)"
 r "$BASE/cells"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"1 Fable 73.4% \$9.64 72,060 70"* ]]
   check "nested cells stay apart  " 1 "$(is && echo 1 || echo 0)"

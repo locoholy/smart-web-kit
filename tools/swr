@@ -309,7 +309,11 @@ function htmlToMd(html, base) {
   let s = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<(nav|footer|aside|noscript)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    // Navigation often holds the only download or catalog link. Keep anchors
+    // while dropping the surrounding boilerplate.
+    .replace(/<(nav|footer|aside)\b[^>]*>([\s\S]*?)<\/\1>/gi,
+      (_, _tag, body) => '\n' + (body.match(/<a\s[^>]*href=["'][^"']+["'][^>]*>[\s\S]*?<\/a>/gi) || []).join('\n') + '\n')
     .replace(/<!--[\s\S]*?-->/g, ' ');
   /* A chart's data lives in the aria-label of its shapes, never in a text
    * node, so stripping tags leaves the agent blind to it. SVG graphic
@@ -318,10 +322,11 @@ function htmlToMd(html, base) {
     /<(g|circle|rect|path|polygon|polyline|line|ellipse|image|svg)\s[^>]*aria-label=["']([^"']+)["'][^>]*>/gi,
     (_, _tag, label) => '\n- ' + label.trim(),
   );
-  s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, l, t) => '\n\n' + '#'.repeat(+l) + ' ' + txt(t) + '\n\n');
-  s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, t) => '\n- ' + txt(t));
+  // Convert anchors before headings and list items strip their nested tags.
   s = s.replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
     (_, h, t) => { const x = txt(t); return x ? `[${x}](${abs(h)})` : ''; });
+  s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, l, t) => '\n\n' + '#'.repeat(+l) + ' ' + txt(t) + '\n\n');
+  s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, t) => '\n- ' + txt(t));
   s = s.replace(/<(p|div|br|section|article|header|main|table|tr|h[1-6])[^>]*>/gi, '\n');
   s = s.replace(/<[^>]+>/g, ' ');
   s = s.replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')

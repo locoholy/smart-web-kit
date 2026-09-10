@@ -9,6 +9,15 @@ Research is a data-collection job, not a sequence of search snippets. `swr`
 reads one URL; this skill controls the queue of sources and preserves the
 dataset for analysis.
 
+For reading source pages, start with `swr URL` (see
+[smart-web-read](../smart-web-read/SKILL.md)). It returns page text and links
+as Markdown, reads JSON endpoints, and tries the browser when a plain fetch
+fails. Download links, documentation links, and catalog links can usually be
+collected from that output without a separate `curl`/HTML parsing workflow.
+Save the result and inspect it locally; if something is missing, identify the
+specific gap before choosing an additional extraction method. A readable page
+does not guarantee that links behind interactive buttons have been captured.
+
 ## Procedure
 
 1. State the research question and record constraints as fields to evaluate
