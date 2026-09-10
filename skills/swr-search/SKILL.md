@@ -7,7 +7,10 @@ description: Use when the user needs a specific lookup, a direct site search, or
 
 Use native search first. When the user names a site, go directly to that site;
 use `swr <url>` to read pages that native fetch cannot read. Never hand-roll
-curl or launch a second browser.
+curl or launch a second browser. When native search itself is unavailable
+(quota, 503), `opencli` carries its own search adapters — `opencli google
+search "<query>" -f json`, same for `duckduckgo`. They are flaky and no
+substitute for native search; reach for them only when it is down.
 
 Search and read are two tiers of one loop: native search discovers candidate
 URLs, `swr <url>` reads them. A snippet is a lead, not evidence — open the
