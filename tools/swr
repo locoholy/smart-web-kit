@@ -102,6 +102,8 @@ function skillRoots() {
     const r = path.join(home(), a, 'skills');
     if (fs.existsSync(r)) roots.push(r);
   }
+  const geminiConfig = path.join(home(), '.gemini', 'config', 'skills');
+  if (fs.existsSync(geminiConfig)) roots.push(geminiConfig);
   return roots;
 }
 
