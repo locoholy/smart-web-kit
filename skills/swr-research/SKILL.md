@@ -23,7 +23,10 @@ does not guarantee that links behind interactive buttons have been captured.
 1. State the research question and record constraints as fields to evaluate
 later. Do not filter during collection.
 2. Discover candidate sources with native search, named sites, and links found
-in evidence. Add each canonical source URL once to a queue.
+in evidence. Search is a tool call, not a page: never fetch a search-engine
+results page through `swr`, `curl`, or ad-hoc scripts — `swr` is a reader,
+not a searcher, and lands on the antibot wall. Add each canonical source URL
+once to a queue.
 3. For every source, prefer its catalog, native search, sitemap, API, and
 pagination/cursors over a search engine. Read every reachable result page.
 4. Retain every raw record and source URL. Record missing fields as `unknown`;
@@ -34,9 +37,7 @@ LLM for sorting, filtering, and comparison.
 
 Do not use `head`, first-screen snippets, or early price filters as evidence.
 Do not repeat a canonical URL, identical query, filter, or cursor. Google is a
-discovery fallback, never the primary catalog. Never fetch a search-engine
-results page through `swr`, `curl`, or ad-hoc scripts: `swr` is a reader, not
-a searcher, and lands on the antibot wall. If the browser bridge is down
+discovery fallback, never the primary catalog. If the browser bridge is down
 (`swr doctor`, exit 4), report it instead of improvising extraction.
 
 Stop only when the source queue and every reachable pagination chain are

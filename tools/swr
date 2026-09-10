@@ -126,8 +126,15 @@ function cmdDoctor(flags) {
           synced = false;
           continue;
         }
-        const matches = fs.existsSync(sk.source)
+        let matches = fs.existsSync(sk.source)
           && fs.readFileSync(sk.source, 'utf8') === fs.readFileSync(target, 'utf8');
+        if (!matches) {
+          /* A concurrent `swr init` mid-write shows as a transient mismatch;
+           * re-read once before declaring the root stale. */
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+          matches = fs.existsSync(sk.source)
+            && fs.readFileSync(sk.source, 'utf8') === fs.readFileSync(target, 'utf8');
+        }
         if (!matches) tErr('skill ' + sk.dir + ' @ ' + root + ': OUT OF SYNC — run `swr init`');
         synced &&= matches;
       }
