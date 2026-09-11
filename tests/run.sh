@@ -101,6 +101,10 @@ r_browser_heal(){ # A dead bridge must be revived and the read finished, not rep
   R_OUT=$(SWR_TOTAL_BUDGET=30 SWR_BRIDGE_REPAIR=no-launch SWR_FAKE_NO_EXT=1 SWR_FAKE_HEAL=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
 }
 
+r_browser_furniture(){ # Nav/footer boilerplate is not content, however long it is.
+  R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_FAKE_FURNITURE=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
+}
+
 r_browser_l3(){ # L3 must read only a first-party API response.
   R_OUT=$(SWR_TOTAL_BUDGET=2 SWR_FAKE_L3=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$1" 2>/dev/null); R_CODE=$?
 }
@@ -177,6 +181,11 @@ r_browser_nobridge "$BASE/gwall"
 r_browser_heal "$BASE/gwall"
   [ "$R_CODE" = 0 ] && [ -n "$R_OUT" ];    check "bridge repaired -> read  " 1 "$(is && echo 1 || echo 0)"
   grep -F "daemon restart" "$TMP/opencli.log" >/dev/null; check "repair restarts daemon " 1 "$(is && echo 1 || echo 0)"
+r_browser_furniture "$BASE/gwall"
+  [[ "$R_OUT" != *"Sitemap"* ]] && [[ "$R_OUT" != *"Popular queries"* ]]
+  check "furniture never reaches stdout" 1 "$(is && echo 1 || echo 0)"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"DOM fallback"* ]]
+  check "furniture falls to next tier" 1 "$(is && echo 1 || echo 0)"
 r_browser_dom "$BASE/gwall"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"DOM fallback"* ]]; check "thin extract -> DOM read " 1 "$(is && echo 1 || echo 0)"
   grep -F "get html --selector main, article, [role=main] --as html" "$TMP/opencli.log" >/dev/null; check "DOM landmark contract  " 1 "$(is && echo 1 || echo 0)"

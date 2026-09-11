@@ -353,16 +353,48 @@ const SOFT_MARKERS = [
   ['spa-shell', 200, /<div[^>]+id=["'](root|__next|__nuxt|app|q-app|root-app)["']/],
 ];
 
-function isGoogleSearchUrl(value) {
-  const parsed = new URL(value);
-  return /(^|\.)google\./i.test(parsed.hostname) && parsed.pathname === '/search';
+/* The same honesty question the prose measure asks of text, asked of a JSON
+ * payload: a feature-flag blob or an empty config is first-party and API-ish
+ * and still tells the reader nothing. Data means a populated collection, or
+ * enough fields to be worth the name. */
+function carriesData(out) {
+  const raw = String(out || '').trim();
+  if (raw.length <= 50) return false;
+  const i = raw.search(/[[{]/);
+  let data = null;
+  if (i >= 0) { try { data = JSON.parse(raw.slice(i)); } catch { /* not JSON: judged by size */ } }
+  if (data === null) return raw.length > 500;
+  // `network --detail` wraps the payload in an envelope; the envelope always
+  // looks populated, so judge what the server actually sent.
+  const payload = data && !Array.isArray(data) && data.body !== undefined ? data.body : data;
+  const hasCollection = (v) => {
+    if (Array.isArray(v)) return v.length > 1 || v.some(hasCollection);
+    if (v && typeof v === 'object') return Object.values(v).some(hasCollection);
+    return false;
+  };
+  const facts = (v) => {
+    if (Array.isArray(v)) return v.reduce((n, x) => n + facts(x), 0);
+    if (v && typeof v === 'object') return Object.values(v).reduce((n, x) => n + facts(x), 0);
+    return v === null || v === '' || v === undefined ? 0 : 1;
+  };
+  return hasCollection(payload) || facts(payload) >= 3;
 }
 
-function googleSearchState(html) {
-  if (!isGoogleSearchUrl(url)) return null;
-  if (/(?:consent\.google\.com|recaptcha|unusual traffic)/i.test(html)) return 'google-wall';
-  const resultLinks = html.match(/<a\b[^>]+href=["'](?:\/url\?[^"']*[?&]q=|https?:\/\/(?![^"']*\.google\.)[^"']+)/gi) || [];
-  return resultLinks.length > 0 ? null : 'google-serp-without-results';
+/* Furniture, not text. A navigation dump, a cookie footer and a wall page are
+ * mostly link labels; a real page — an article or a spec table alike — is
+ * mostly words. One measure, no site names in it. It only speaks when there is
+ * enough text to judge: a short valid page is still a page. */
+const MIN_PROSE_SHARE = 0.6;
+const JUDGE_FLOOR = 400;
+function isFurniture(md) {
+  let linkChars = 0;
+  const labels = String(md).replace(/\[([^\]]*)\]\(([^)]*)\)/g, (_m, label) => {
+    linkChars += label.length;
+    return label;
+  });
+  const text = labels.replace(/[#*_>`|-]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (text.length < JUDGE_FLOOR) return false;
+  return (text.length - linkChars) / text.length < MIN_PROSE_SHARE;
 }
 
 /* Minimal HTML → Markdown. ~60 lines, zero deps, good enough for LLM intake.
@@ -451,10 +483,6 @@ function notContent(body, httpCode, textLen, mode) {
   for (const [name, re] of HARD_MARKERS) {
     if (re.test(body)) { reasons.push(name); break; }
   }
-  if (mode === 'html') {
-    const googleState = googleSearchState(body);
-    if (googleState) reasons.push(googleState);
-  }
   for (const [name, ceiling, re] of SOFT_MARKERS) {
     if (textLen < ceiling && re.test(body)) { reasons.push(name); break; }
   }
@@ -539,16 +567,16 @@ function tryL2L3(sid) {
         title = String(j.title || '');
       } catch { md = out; } // older builds: raw markdown
     }
-    if (md.length > 200) {
+    if (md.length > 200 && !isFurniture(md)) {
       const body = (title ? `# ${title}\n\n` : '') + md;
       return { kind: 'md', body };
     }
-    tlog(`L2 extract thin (${md.length}b) → DOM landmark read`);
+    tlog(`L2 extract ${isFurniture(md) ? 'is page furniture' : `thin (${md.length}b)`} → DOM landmark read`);
     const rd = shOpencli([
       'browser', sid, 'get', 'html', '--selector', 'main, article, [role=main]', '--as', 'html',
     ], withBudget(DOM_TIMEOUT));
     const dom = rd.code === 0 ? htmlToMd(rd.out, url) : '';
-    if (dom.length > 200) return { kind: 'md', body: dom };
+    if (dom.length > 200 && !isFurniture(dom)) return { kind: 'md', body: dom };
     tlog(`L2 DOM landmark thin (${dom.length}b) → L3 network capture`);
 
     assertBudget('L3 network');
@@ -561,7 +589,7 @@ function tryL2L3(sid) {
     for (const h of hits.slice(0, 3)) {
       const key = String(h.key || h.id);
       const rd = shOpencli(['browser', sid, 'network', '--detail', key, '--max-body', '20000'], withBudget(NETWORK_TIMEOUT));
-      if (rd.code === 0 && rd.out.trim().length > 50) { result = { kind: 'json', body: rd.out.trim() }; break; }
+      if (rd.code === 0 && carriesData(rd.out)) { result = { kind: 'json', body: rd.out.trim() }; break; }
     }
   } finally {
     closeSession(); // zero orphan tabs: normal path, exception, signal — all covered
