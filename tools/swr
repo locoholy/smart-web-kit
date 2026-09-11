@@ -42,10 +42,13 @@ const OPENCLI_BIN = process.env.SWR_OPENCLI_BIN || 'opencli';
 const TOTAL_BUDGET_MS = parseInt(process.env.SWR_TOTAL_BUDGET || '45', 10) * 1000;
 const T0 = Date.now();
 
-const INIT_SKILLS = ['smart-web-read', 'swr-search', 'swr-research'].map((dir) => ({
+const INIT_SKILLS = ['smart-web-read'].map((dir) => ({
   dir,
   source: path.join(__dirname, '..', 'skills', dir, 'SKILL.md'),
 }));
+/* Skills we used to ship. `init` copies but never deletes, so a retired skill
+ * would keep being loaded from every root forever — uninstall it by name. */
+const RETIRED_SKILLS = ['swr-search', 'swr-research'];
 
 const args = process.argv.slice(2);
 if (args[0] === 'init') { cmdInit(); process.exit(0); }
@@ -96,7 +99,16 @@ function cmdInit() {
       fs.copyFileSync(sk.source, tmp);
       fs.renameSync(tmp, target);
     }
-    tErr('init: 3 skills → ' + root);
+    for (const dir of RETIRED_SKILLS) {
+      const gone = path.join(root, dir);
+      // lstat, not existsSync: a root may hold a symlink to another root, and
+      // once the target is retired that link dangles — existsSync follows it
+      // and reports nothing to clean, leaving the litter behind forever.
+      try { fs.lstatSync(gone); } catch { continue; }
+      fs.rmSync(gone, { recursive: true, force: true });
+      tErr('retired: removed ' + dir + ' from ' + root);
+    }
+    tErr('init: ' + INIT_SKILLS.length + ' skill → ' + root);
   }
   tErr('init: done');
 }

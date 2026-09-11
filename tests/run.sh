@@ -188,11 +188,10 @@ r "http://10.255.255.1/x"
 
 mkdir -p "$TMP/home" "$TMP/proj" && ( cd "$TMP/proj" && HOME="$TMP/home" "$SWR" init ) >/dev/null 2>&1
   [ -f "$TMP/home/.agents/skills/smart-web-read/SKILL.md" ]; check "swr init -> global read  " 1 "$(is && echo 1 || echo 0)"
-  [ -f "$TMP/home/.agents/skills/swr-search/SKILL.md" ];       check "swr init -> global search" 1 "$(is && echo 1 || echo 0)"
-  [ -f "$TMP/home/.agents/skills/swr-research/SKILL.md" ];     check "swr init -> global research" 1 "$(is && echo 1 || echo 0)"
+  mkdir -p "$TMP/home/.agents/skills/swr-search" && echo stale > "$TMP/home/.agents/skills/swr-search/SKILL.md"
+  ( cd "$TMP/proj" && HOME="$TMP/home" "$SWR" init ) >/dev/null 2>&1
+  [ ! -e "$TMP/home/.agents/skills/swr-search" ];              check "init retires old skills " 1 "$(is && echo 1 || echo 0)"
   cmp -s "$(dirname "$SWR")/../skills/smart-web-read/SKILL.md" "$TMP/home/.agents/skills/smart-web-read/SKILL.md"; check "read source synced      " 1 "$(is && echo 1 || echo 0)"
-  cmp -s "$(dirname "$SWR")/../skills/swr-search/SKILL.md" "$TMP/home/.agents/skills/swr-search/SKILL.md";       check "search source synced    " 1 "$(is && echo 1 || echo 0)"
-  cmp -s "$(dirname "$SWR")/../skills/swr-research/SKILL.md" "$TMP/home/.agents/skills/swr-research/SKILL.md";   check "research source synced  " 1 "$(is && echo 1 || echo 0)"
   [ "$(HOME="$TMP/home" "$SWR" doctor --skills 2>/dev/null; echo $?)" = "skills-ready
 0" ]; check "doctor skills synced    " 1 "$(is && echo 1 || echo 0)"
   [ ! -d "$TMP/proj/.agents" ] && [ ! -d "$TMP/proj/.claude" ]; check "no project skill dirs   " 1 "$(is && echo 1 || echo 0)"

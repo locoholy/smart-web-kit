@@ -1,8 +1,7 @@
 # smart-web-kit
 
-Agent-native web reading, source discovery, and research for Claude Code /
-Antigravity / Cline / any CLI agent. Three primitives, zero npm dependencies,
-one install command.
+Agent-native web reading for Claude Code / Antigravity / Cline / any CLI
+agent. One primitive, zero npm dependencies, one install command.
 
 ## Why
 
@@ -14,18 +13,16 @@ Agents burn ~80% of their time and context reading the web through raw `curl`
   Markdown or JSON. Cheap HTTP fetch first; on detected failure escalates to
   the user's **real logged-in Chrome** via [OpenCLI](https://opencli.com)
   (Cloudflare already passed, sessions alive), then to network JSON capture.
-- **`swr-search`** (skill) — direct lookup and source discovery. It prevents
-  redundant requests but does not impose a fixed call cap.
-- **`swr-research`** (skill) — multi-source collection: source queue → full
-  catalog/API/pagination scan → normalized dataset → LLM analysis. It never
-  filters before retaining the source records.
+- **`smart-web-read`** (skill) — teaches the agent to reach for `swr` on every
+  URL, and where the tool ends: searching is the agent's own search tool, and
+  scraping a catalog into records is a job for driving `opencli` directly.
 
 ## Install (macOS / Linux)
 
 Prerequisites: `node >= 18`, Chrome.
 
 - **L1 works out of the box** — plain HTTP fetch, no extras needed.
-- **Full ladder (L2/L3) + swr-search** need [OpenCLI](https://opencli.com):
+- **Full ladder (L2/L3)** needs [OpenCLI](https://opencli.com):
   `npm install -g @jackwener/opencli`, then add the **OpenCLI Chrome extension**
   (Chrome Web Store) and check `opencli doctor` — it must say
   `Extension: connected` (without it, Chrome escalation in `swr` cannot run;
@@ -44,7 +41,7 @@ npm install -g .          # provides the `swr` binary (L1 works immediately)
 Then sync the skill registry once:
 
 ```bash
-swr init                 # 3 SKILL.md → ~/.agents/skills + every agent root you already have
+swr init                 # SKILL.md → ~/.agents/skills + every agent root you already have
 swr doctor               # "ready" / "not-ready" + exactly what to install (incl. the Chrome extension) for escalation
 swr doctor --skills      # verifies EVERY installed copy matches this release
 ```
@@ -134,9 +131,10 @@ Configuration via env: `SWR_TOTAL_BUDGET` (seconds, default 45),
 
 ## Skills
 
-- [`skills/smart-web-read/SKILL.md`](skills/smart-web-read/SKILL.md) — teaches the agent to *always* use `swr` for URLs.
-- [`skills/swr-search/SKILL.md`](skills/swr-search/SKILL.md) — direct lookup and source discovery.
-- [`skills/swr-research/SKILL.md`](skills/swr-research/SKILL.md) — complete multi-source collection before analysis.
+- [`skills/smart-web-read/SKILL.md`](skills/smart-web-read/SKILL.md) — teaches the agent to *always* use `swr` for URLs, and where the tool ends.
+
+`init` also removes skills this kit used to ship (`swr-search`, `swr-research`)
+from every root, so a retired copy cannot keep being loaded.
 
 ## License
 
