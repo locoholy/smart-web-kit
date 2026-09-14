@@ -21,7 +21,18 @@ repeated search-by-fragments). Always run `swr`:
 
 ```bash
 swr <url>          # clean Markdown → stdout, telemetry → stderr
-swr --json <url>   # envelope: {url, final_url, source, elapsed_ms, content}
+swr --json <url>   # {url, final_url, ok, source, elapsed_ms, content}
+                   # on failure: {url, ok:false, reason, detail, elapsed_ms}
+```
+
+**A whole page is rarely what you need — pipe it.** Bytes that never enter your
+context cost nothing, and `swr` has no flags for this on purpose: your shell
+already does it better.
+
+```bash
+swr <url> | grep -n -A5 -i 'reasoning effort'   # one answer, not the page
+swr <url> | grep '^#'                           # the outline: is it worth reading?
+swr <url> | head -c 40000                       # cap a page of unknown size
 ```
 
 Read `stdout` only. `swr doctor` says whether Chrome escalation is available.
@@ -45,10 +56,16 @@ scraper:
 
 ## Exit codes → what to do
 
+The exit code says how badly it failed; `--json` says **why**, in one word, so
+you do not have to read English prose off stderr to pick your next move. Act on
+`reason`: `http-404` is gone for good, `login-wall` needs the user to sign in,
+`binary-payload:*` means the URL is a PDF or an archive and no reader will help,
+`unreadable` is the only one worth driving the browser for.
+
 | code | meaning | action |
 |---|---|---|
 | 0 | content on stdout | parse and use |
-| 1 | page unreadable / real error (404, login wall, Chrome error page) | say so; if you need what is on that page, go drive the browser with `opencli` |
+| 1 | page unreadable / real error (404, login wall, binary payload, Chrome error page) | read `reason`, act per the line above |
 | 2 | bad usage | fix your arguments |
 | 3 | timeout / session busy | retry **once**, then give up |
 | 4 | Chrome bridge down and `swr` could not revive it (it starts Chrome and restarts the daemon on its own) | a human has to act: relay the line stderr printed, verbatim |

@@ -59,6 +59,12 @@ http.createServer((req,res)=>{
   // A long, valid article that merely MENTIONS a login and a 404. Content.
   if(req.url==='/mentions') return b('<h1>Guide</h1><p>'+'Real documentation body. '.repeat(120)+
     'If the dashboard shows 404 not found, please log in again.</p><p>'+'More prose. '.repeat(120)+'</p>');
+  // A spec served as PDF: bytes that can never become Markdown. Emitting them
+  // is worse than failing — the caller gets mojibake and an exit 0 saying it is
+  // the page.
+  if(req.url==='/pdf'){res.writeHead(200,{"content-type":"application/pdf"});
+    return res.end(Buffer.concat([Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\nstream\n'),
+      Buffer.from(Array.from({length:3000},(_,i)=>i%256)),Buffer.from('\nendstream\n%%EOF\n')]));}
   if(req.url==='/404'){res.writeHead(404,{"content-type":"text/html; charset=utf8"});return res.end('<h1>404 Not Found</h1><p>Missing.</p>');}
   if(req.url==='/502'){res.writeHead(502,{"content-type":"text/html; charset=utf8"});return res.end('<p>Bad Gateway</p>');}
   if(req.url==='/wall') return b('<h1>Sign in to continue</h1><p>Please log in.</p>');
@@ -158,6 +164,25 @@ r "$BASE/mentions"
 r_browser_mention "$BASE/gwall"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"deterministic fixture"* ]]
   check "L2 page: mention != wall " 1 "$(is && echo 1 || echo 0)"
+
+r "$BASE/pdf"
+  [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ];   check "binary -> exit != 0, empty" 1 "$(is && echo 1 || echo 0)"
+: > "$TMP/opencli.log"
+r_browser "$BASE/pdf"
+  [ "$R_CODE" != 0 ] && [ ! -s "$TMP/opencli.log" ]
+  check "binary skips browser     " 1 "$(is && echo 1 || echo 0)"
+
+# A --json caller must always get something parseable. An empty stdout plus a
+# sentence of English on stderr is the one answer an agent cannot act on.
+R_OUT=$(SWR_BROWSER=off SWR_TOTAL_BUDGET=2 "$SWR" --json "$BASE/404" 2>/dev/null); R_CODE=$?
+  [ "$R_CODE" = 1 ] && [[ "$R_OUT" == *'"ok":false'* ]] && [[ "$R_OUT" == *'"reason":"http-404"'* ]]
+  check "--json failure envelope  " 1 "$(is && echo 1 || echo 0)"
+R_OUT=$(SWR_BROWSER=off SWR_TOTAL_BUDGET=2 "$SWR" --json "$BASE/pdf" 2>/dev/null); R_CODE=$?
+  [[ "$R_OUT" == *'"reason":"binary-payload:application/pdf"'* ]]
+  check "--json names the reason  " 1 "$(is && echo 1 || echo 0)"
+# Plain mode keeps its promise in both directions: stdout means content.
+R_OUT=$(SWR_BROWSER=off SWR_TOTAL_BUDGET=2 "$SWR" "$BASE/404" 2>/dev/null)
+  [ -z "$R_OUT" ];                         check "plain failure stays silent" 1 "$(is && echo 1 || echo 0)"
 
 r "$BASE/404"
   [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ];   check "404 -> exit != 0, empty  " 1 "$(is && echo 1 || echo 0)"

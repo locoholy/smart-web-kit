@@ -23,7 +23,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 /* A cold vendor page can take ~5s to answer. At a 5s ceiling that page became
  * a "failed" fetch, then an expensive Chrome escalation, then — if the bridge
@@ -471,6 +471,22 @@ function dropRepeatedBlock(text) {
   return text;
 }
 
+/* A payload that is not text cannot become Markdown, and shipping its bytes is
+ * worse than failing: the caller gets mojibake and an exit 0 telling it that is
+ * the page. PDFs are the common case — specs, papers and vendor docs live in
+ * them, and `api` mode waves them through because its only judge is the status
+ * code. The server already said what this is, so ask it; sniff only when it
+ * stayed silent. */
+const TEXTUAL_CTYPE = /^(text\/|application\/(json|xml|javascript|ecmascript|x-ndjson|yaml|x-yaml|xhtml)|[^;]*\+json|[^;]*\+xml)/i;
+function isBinaryPayload(raw, ctype) {
+  if (ctype) return !TEXTUAL_CTYPE.test(ctype.trim());
+  // curl's output was decoded as utf8, so foreign bytes are already U+FFFD.
+  const head = String(raw).slice(0, 1000);
+  if (!head) return false;
+  if (head.includes('\u0000')) return true;
+  return (head.match(/[\uFFFD\u0001-\u0008\u000E-\u001F]/g) || []).length / head.length > 0.05;
+}
+
 /* Returns the list of reasons this body is not readable content. Empty = ship it. */
 function notContent(body, httpCode, textLen, mode) {
   const reasons = [];
@@ -515,6 +531,12 @@ function tryL1() {
   const isHtml = ctype
     ? /html|xml/i.test(ctype)
     : /<html|<!doctype html|<body/i.test(raw.slice(0, 2000));
+  // `terminal` marks an answer Chrome cannot improve on, so the ladder stops
+  // here instead of spending a browser launch to fail in the same way.
+  if (!isHtml && isBinaryPayload(raw, ctype)) {
+    const what = ctype ? ':' + ctype.split(';')[0].trim() : '';
+    return { httpCode, body: '', reasons: ['binary-payload' + what], isHtml, finalUrl, blocked: true, terminal: true };
+  }
   const body = isHtml ? htmlToMd(raw, finalUrl) : raw;
   const reasons = notContent(isHtml ? raw : body, httpCode, body.length, isHtml ? 'html' : 'api');
   return { httpCode, body, reasons, isHtml, finalUrl, blocked: reasons.length > 0 };
@@ -621,10 +643,31 @@ function emit(source, body, markup, finalUrl) {
      * redirector. The caller needs the page it actually landed on — to cite
      * it, and to build the next URL against the right host. */
     const landed = finalUrl && finalUrl !== url ? { final_url: finalUrl } : {};
-    console.log(JSON.stringify({ url, ...landed, source, elapsed_ms: elapsedMs(), content: body }));
+    console.log(JSON.stringify({ url, ...landed, ok: true, source, elapsed_ms: elapsedMs(), content: body }));
   } else {
     console.log(body);
   }
+}
+
+/* stdout has exactly one owner. Content leaves through emit(); every other
+ * ending leaves through here, so a `--json` caller always gets something it can
+ * parse instead of an empty stdout plus a sentence of English on stderr — the
+ * one thing an agent cannot act on. Plain mode stays silent on failure: there,
+ * stdout means content and nothing else. Usage errors are deliberately not
+ * routed here — they are the caller's own mistake, and there is no page to
+ * report on yet. */
+function fail(code, reason, detail) {
+  if (detail) tlog(detail);
+  if (asJson) {
+    console.log(JSON.stringify({
+      url,
+      ok: false,
+      reason: String(reason).trim().toLowerCase().replace(/\s+/g, '-'),
+      detail: detail || undefined,
+      elapsed_ms: elapsedMs(),
+    }));
+  }
+  process.exit(code);
 }
 
 /* ---------- main ---------- */
@@ -635,22 +678,20 @@ if (!l1.fail && !l1.blocked) {
   emit('L1', l1.body, l1.isHtml, l1.finalUrl);
   process.exit(0);
 }
-// A malformed request or a definitively absent resource cannot become readable
-// in Chrome. Avoid an expensive browser launch for these terminal responses.
-if (!l1.fail && [400, 404, 410, 422].includes(l1.httpCode)) {
-  tlog(`L1 terminal HTTP ${l1.httpCode} → not escalating`);
-  process.exit(1);
+// A malformed request, an absent resource, or a payload that was never text
+// cannot become readable in Chrome. Avoid an expensive browser launch for these
+// terminal responses.
+if (!l1.fail && (l1.terminal || [400, 404, 410, 422].includes(l1.httpCode))) {
+  fail(1, l1.reasons[0], `L1 terminal (${l1.reasons.join(', ')}) → not escalating`);
 }
 tlog(`L1 failed (${(l1.fail || l1.reasons).join(', ')}) → escalating to Chrome`);
 
 if (!BROWSER_ENABLED) {
-  tErr('browser escalation disabled (SWR_BROWSER=off)');
-  process.exit(1);
+  fail(1, 'browser-disabled', 'browser escalation disabled (SWR_BROWSER=off)');
 }
 
 if (shOpencli(['--version'], 5).code !== 0) {
-  tErr('opencli unavailable — cannot escalate (install OpenCLI or run: opencli doctor)');
-  process.exit(4);
+  fail(4, 'opencli-missing', 'opencli unavailable — cannot escalate (install OpenCLI or run: opencli doctor)');
 }
 
 /* Check the bridge before spending a browser attempt on it: a dead bridge
@@ -658,15 +699,12 @@ if (shOpencli(['--version'], 5).code !== 0) {
 const preFault = bridgeFault(10);
 if (preFault) {
   const stillBroken = repairBridge();
-  if (stillBroken) {
-    tErr('Chrome escalation unavailable — ' + stillBroken);
-    process.exit(4);
-  }
+  if (stillBroken) fail(4, 'bridge-down', 'Chrome escalation unavailable — ' + stillBroken);
 }
 
 const sid = sessionId(url);
 const lock = acquireLock(sid);
-if (!lock) { tErr('session ' + sid + ' busy >' + LOCK_WAIT_MS / 1000 + 's, giving up'); process.exit(3); }
+if (!lock) fail(3, 'session-busy', 'session ' + sid + ' busy >' + LOCK_WAIT_MS / 1000 + 's, giving up');
 
 let result = null;
 try {
@@ -681,19 +719,14 @@ if (!result) {
   /* The bridge was up when we started; if it died mid-read, that is our
    * failure, not the page's, and must not be reported as a wall. */
   const fault = bridgeFault(10);
-  if (fault) {
-    tErr('Chrome escalation never ran — ' + fault);
-    process.exit(4);
-  }
-  tlog('gave up: no readable content via L1/L2/L3');
-  process.exit(1);
+  if (fault) fail(4, 'bridge-down', 'Chrome escalation never ran — ' + fault);
+  fail(1, 'unreadable', 'gave up: no readable content via L1/L2/L3');
 }
 // Same detector as L1 — a Chrome error page must never be emitted as success.
 // `text` mode: no HTTP status to lean on, and soft markers stay bounded by the
 // text ceiling so a long, real page survives a stray "404 not found" inside it.
 const l2Reasons = notContent(result.body, null, result.body.length, result.kind === 'json' ? 'api' : 'text');
 if (l2Reasons.length) {
-  tlog('failed: escalation returned a wall, not content (' + l2Reasons.join(', ') + ')');
-  process.exit(1);
+  fail(1, l2Reasons[0], 'failed: escalation returned a wall, not content (' + l2Reasons.join(', ') + ')');
 }
 emit(result.kind === 'json' ? 'L3' : 'L2', result.body, result.kind !== 'json');
