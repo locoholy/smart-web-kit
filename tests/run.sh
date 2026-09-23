@@ -65,6 +65,23 @@ http.createServer((req,res)=>{
   if(req.url==='/pdf'){res.writeHead(200,{"content-type":"application/pdf"});
     return res.end(Buffer.concat([Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\nstream\n'),
       Buffer.from(Array.from({length:3000},(_,i)=>i%256)),Buffer.from('\nendstream\n%%EOF\n')]));}
+  // Google's devsite handshake: a browser UA is bounced to a sign-in check that
+  // sets a cookie and redirects back; without the cookie it bounces forever.
+  if(req.url==='/devsite'){
+    if(/signin=done/.test(req.headers.cookie||'')) return b('<h1>Devsite doc</h1><p>'+'Documentation prose. '.repeat(30)+'</p>');
+    res.writeHead(302,{location:'/devsite','set-cookie':'signin=done; Path=/'});return res.end();}
+  if(req.url==='/devsite-404'){
+    if(/signin=done/.test(req.headers.cookie||'')){res.writeHead(404,{"content-type":"text/html"});return res.end('<h1>Not found</h1>');}
+    res.writeHead(302,{location:'/devsite-404','set-cookie':'signin=done; Path=/'});return res.end();}
+  // Highlighted code: every token in a span. Tags inside <pre> are not word
+  // boundaries, and its whitespace is the program.
+  if(req.url==='/code') return b('<head><link rel="stylesheet" href="/s.css"><link rel="icon" href="/i.png"></head>'+
+    '<body><h1>Quickstart</h1><p>'+'Install the client and call it. '.repeat(10)+'</p>'+
+    '<pre><code><span class="k">from</span> google <span class="k">import</span> genai\n'+
+    '<span class="n">client</span> = genai.<span class="f">Client</span>()\n'+
+    'if x &lt; 3:\n    <span class="f">run</span>(&quot;a&quot;)</code></pre>'+
+    '<video controls><source src="/v.mp4">Your browser does not support the video tag.</video>'+
+    '<ul><li>First item</li><li>Second item</li></ul></body>');
   if(req.url==='/404'){res.writeHead(404,{"content-type":"text/html; charset=utf8"});return res.end('<h1>404 Not Found</h1><p>Missing.</p>');}
   if(req.url==='/502'){res.writeHead(502,{"content-type":"text/html; charset=utf8"});return res.end('<p>Bad Gateway</p>');}
   if(req.url==='/wall') return b('<h1>Sign in to continue</h1><p>Please log in.</p>');
@@ -157,6 +174,25 @@ r "$BASE/nested-links"
 r "$BASE/cells"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"1 Fable 73.4% \$9.64 72,060 70"* ]]
   check "nested cells stay apart  " 1 "$(is && echo 1 || echo 0)"
+r "$BASE/devsite"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"Devsite doc"* ]]
+  check "sign-in cookie loop reads" 1 "$(is && echo 1 || echo 0)"
+: > "$TMP/opencli.log"
+r_browser "$BASE/devsite-404"
+  [ "$R_CODE" = 1 ] && [ -z "$R_OUT" ] && [ ! -s "$TMP/opencli.log" ]
+  check "404 behind cookie loop   " 1 "$(is && echo 1 || echo 0)"
+r "$BASE/code"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *'```
+from google import genai
+client = genai.Client()
+if x < 3:
+    run("a")
+```'* ]]
+  check "code block verbatim      " 1 "$(is && echo 1 || echo 0)"
+  [[ "$R_OUT" == *"- First item"* ]] && [[ "$R_OUT" == *"- Second item"* ]] && [[ "$R_OUT" == *"# Quickstart"* ]]
+  check "<link> is not a list item" 1 "$(is && echo 1 || echo 0)"
+  [[ "$R_OUT" != *"does not support the video"* ]]
+  check "video fallback dropped   " 1 "$(is && echo 1 || echo 0)"
 r "$BASE/mentions"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"Real documentation body"* ]]
   check "long page: mention != wall" 1 "$(is && echo 1 || echo 0)"
@@ -215,8 +251,16 @@ r_browser_dom "$BASE/gwall"
   [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *"DOM fallback"* ]]; check "thin extract -> DOM read " 1 "$(is && echo 1 || echo 0)"
   grep -F "get html --selector main, article, [role=main] --as html" "$TMP/opencli.log" >/dev/null; check "DOM landmark contract  " 1 "$(is && echo 1 || echo 0)"
 r_browser_l3 "$BASE/gwall"
-  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *'"plan":"SuperGrok"'* ]]; check "L3 reads first-party API " 1 "$(is && echo 1 || echo 0)"
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *'"plan": "SuperGrok"'* ]]; check "L3 reads first-party API " 1 "$(is && echo 1 || echo 0)"
   grep -F "network --detail first-party" "$TMP/opencli.log" >/dev/null && ! grep -F "network --detail third-party" "$TMP/opencli.log" >/dev/null; check "L3 rejects third-party    " 1 "$(is && echo 1 || echo 0)"
+  [[ "$R_OUT" != *'"method"'* ]] && [[ "$R_OUT" != *'not found'* ]]
+  check "L3: body only, 4xx skipped" 1 "$(is && echo 1 || echo 0)"
+  ! grep -F -- "--max-body" "$TMP/opencli.log" >/dev/null; check "L3 body is never cut     " 1 "$(is && echo 1 || echo 0)"
+: > "$TMP/opencli.log"
+R_OUT=$(SWR_TOTAL_BUDGET=5 SWR_FAKE_CHUNKED=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" --json "$BASE/gwall" 2>/dev/null); R_CODE=$?
+  [ "$R_CODE" = 0 ] && [[ "$R_OUT" == *'Part one'* ]] && [[ "$R_OUT" == *'Limitations'* ]] && [[ "$R_OUT" == *'"truncated":false'* ]]
+  check "L2 reads every chunk     " 1 "$(is && echo 1 || echo 0)"
+  grep -F -- "--start 500" "$TMP/opencli.log" >/dev/null; check "L2 follows the cursor    " 1 "$(is && echo 1 || echo 0)"
 r "http://10.255.255.1/x"
   [ "$R_CODE" != 0 ] && [ -z "$R_OUT" ];   check "unreachable -> err, empty" 1 "$(is && echo 1 || echo 0)"
 

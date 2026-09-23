@@ -107,7 +107,7 @@ new agent gets wired up in seconds, not per-agent ceremony.
 
 | Stream | Content |
 |---|---|
-| `stdout` | clean Markdown (default) or JSON envelope (`--json`): `{url, source, elapsed_ms, content}` |
+| `stdout` | clean Markdown (default) or JSON envelope (`--json`): `{url, final_url?, ok, source, truncated, elapsed_ms, content}` — `truncated:true` means the page was cut (over 2 MB or out of budget); it is never cut silently |
 | `stderr` | one-line telemetry events: `[SWR] L1 fail (HTTP 403) → L2 extract ok (12.3KB, 4.1s)` |
 
 | Exit code | Meaning | Agent action |

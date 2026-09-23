@@ -21,7 +21,7 @@ repeated search-by-fragments). Always run `swr`:
 
 ```bash
 swr <url>          # clean Markdown → stdout, telemetry → stderr
-swr --json <url>   # {url, final_url, ok, source, elapsed_ms, content}
+swr --json <url>   # {url, final_url?, ok, source, truncated, elapsed_ms, content}
                    # on failure: {url, ok:false, reason, detail, elapsed_ms}
 ```
 
@@ -35,7 +35,10 @@ swr <url> | grep '^#'                           # the outline: is it worth readi
 swr <url> | head -c 40000                       # cap a page of unknown size
 ```
 
-Read `stdout` only. `swr doctor` says whether Chrome escalation is available.
+Read `stdout` for content, but never send stderr to `/dev/null`: its `[SWR]` lines
+say which tier answered and why a read failed. If `--json` says
+`truncated: true`, you have the start of the page, not all of it. `swr --help`
+lists the env knobs. `swr doctor` says whether Chrome escalation is available.
 If `swr` is missing: ask the user to install smart-web-kit
 (`git clone <repo> && cd smart-web-kit && npm install -g .`), then run
 `swr init` to reproduce this skill. Do NOT fall back to raw `curl`.

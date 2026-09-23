@@ -2,7 +2,7 @@
 'use strict';
 /*
  * swr — Smart Web Read. Escalation ladder for AI agents:
- *   L1: plain HTTP fetch (curl, browser headers, 5s)
+ *   L1: plain HTTP fetch (curl, browser headers, cookie engine)
  *   L2: opencli browser <session> open/extract — real logged-in Chrome
  *   L3: opencli browser <session> network — API JSON capture (empty-SPA case)
  *
@@ -12,10 +12,7 @@
  * Exit codes: 0 ok | 1 gave up | 2 usage | 3 timeout/busy | 4 Chrome bridge
  * down (opencli missing, Chrome closed, or extension not connected)
  *
- * Zero npm dependencies. Requires node >= 18. Config:
- *   SWR_TOTAL_BUDGET  total seconds budget (default 45)
- *   SWR_L1_TIMEOUT    L1 curl timeout seconds (default 15)
- *   SWR_BRIDGE_REPAIR on (default) | no-launch (never start Chrome) | off
+ * Zero npm dependencies. Requires node >= 18. Config: see usage() / `swr --help`.
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -23,7 +20,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 /* A cold vendor page can take ~5s to answer. At a 5s ceiling that page became
  * a "failed" fetch, then an expensive Chrome escalation, then — if the bridge
@@ -40,6 +37,7 @@ const BROWSER_WINDOW = process.env.SWR_BROWSER_WINDOW || 'background';
 const BROWSER_ENABLED = process.env.SWR_BROWSER !== 'off';
 const OPENCLI_BIN = process.env.SWR_OPENCLI_BIN || 'opencli';
 const TOTAL_BUDGET_MS = parseInt(process.env.SWR_TOTAL_BUDGET || '45', 10) * 1000;
+const ACCEPT_LANGUAGE = process.env.SWR_LANG || 'en';
 const T0 = Date.now();
 
 const INIT_SKILLS = ['smart-web-read'].map((dir) => ({
@@ -72,7 +70,30 @@ if (!['background', 'foreground'].includes(BROWSER_WINDOW)) {
 if (!url) { usage(); process.exit(2); }
 try { url = new URL(url).href; } catch { tErr('invalid URL: ' + url); process.exit(2); }
 
-function usage() { process.stderr.write('usage: swr [--json] <url> | swr init | swr doctor [--skills]\n'); }
+/* The contract an agent needs before its first call. It used to live only in a
+ * comment inside this file, which no caller ever reads. */
+function usage() {
+  process.stderr.write(`usage: swr [--json] <url> | swr init | swr doctor [--skills]
+
+Reads one page, whole: curl first, then your real Chrome (opencli), then the
+page's own API JSON. stdout = the page as Markdown (or JSON, verbatim);
+stderr = [SWR] trace of which tier answered — keep it, it explains failures.
+
+  --json   {url, final_url?, ok, source: L1|L2|L3, truncated, elapsed_ms, content}
+           on failure {url, ok:false, reason, detail, elapsed_ms}
+  exit     0 ok | 1 unreadable/4xx/5xx/wall | 2 usage | 3 busy | 4 Chrome bridge down
+
+The page is never cut silently: if it had to stop early (over 2 MB, or out of
+budget), --json says truncated:true and stderr says WARNING: truncated.
+
+env  SWR_TOTAL_BUDGET  seconds for the whole read (45)
+     SWR_L1_TIMEOUT    seconds for the plain fetch (15)
+     SWR_LANG          Accept-Language for the plain fetch (en)
+     SWR_BROWSER=off   never escalate to Chrome
+     SWR_BROWSER_WINDOW background | foreground (background)
+     SWR_BRIDGE_REPAIR on | no-launch | off (on)
+`);
+}
 function tErr(m) { process.stderr.write(`[SWR] ${m}\n`); }
 
 function cmdInit() {
@@ -364,9 +385,6 @@ function carriesData(out) {
   let data = null;
   if (i >= 0) { try { data = JSON.parse(raw.slice(i)); } catch { /* not JSON: judged by size */ } }
   if (data === null) return raw.length > 500;
-  // `network --detail` wraps the payload in an envelope; the envelope always
-  // looks populated, so judge what the server actually sent.
-  const payload = data && !Array.isArray(data) && data.body !== undefined ? data.body : data;
   const hasCollection = (v) => {
     if (Array.isArray(v)) return v.length > 1 || v.some(hasCollection);
     if (v && typeof v === 'object') return Object.values(v).some(hasCollection);
@@ -377,7 +395,7 @@ function carriesData(out) {
     if (v && typeof v === 'object') return Object.values(v).reduce((n, x) => n + facts(x), 0);
     return v === null || v === '' || v === undefined ? 0 : 1;
   };
-  return hasCollection(payload) || facts(payload) >= 3;
+  return hasCollection(data) || facts(data) >= 3;
 }
 
 /* Furniture, not text. A navigation dump, a cookie footer and a wall page are
@@ -412,10 +430,27 @@ function htmlToMd(html, base) {
     if (!base || /^(https?:|data:|mailto:|tel:|javascript:|#)/i.test(href)) return href;
     try { return new URL(href, base).href; } catch { return href; }
   };
+  /* Code is the one place where whitespace is content and a tag is not a word
+   * boundary: a highlighter wraps every token in a span, so the spacing rule
+   * above turns `genai.Client()` into `genai . Client ()` and flattens the
+   * indentation Python depends on. Lift each <pre> out verbatim before any of
+   * that runs, and put it back fenced once the text around it is settled. */
+  const blocks = [];
   let s = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_, body) => {
+      const code = decodeEntities(body.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ''))
+        .replace(/^\n+|\s+$/g, '');
+      if (!code) return ' ';
+      blocks.push(code);
+      return `\n\u0000${blocks.length - 1}\u0000\n`;
+    })
+    // What a <video> or <audio> holds besides its sources is the sentence shown
+    // to browsers that cannot play it — "Your browser does not support the
+    // video tag". It describes our reader, not the page.
+    .replace(/<(video|audio)\b[\s\S]*?<\/\1>/gi, ' ')
     // Navigation often holds the only download or catalog link. Keep anchors
     // while dropping the surrounding boilerplate.
     .replace(/<(nav|footer|aside)\b[^>]*>([\s\S]*?)<\/\1>/gi,
@@ -432,12 +467,25 @@ function htmlToMd(html, base) {
   s = s.replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
     (_, h, t) => { const x = txt(t); return x ? `[${x}](${abs(h)})` : ''; });
   s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, l, t) => '\n\n' + '#'.repeat(+l) + ' ' + txt(t) + '\n\n');
-  s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, t) => '\n- ' + txt(t));
-  s = s.replace(/<(p|div|br|section|article|header|main|table|tr|h[1-6])[^>]*>/gi, '\n');
-  s = s.replace(/<[^>]+>/g, ' ');
-  s = s.replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
-       .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'");
-  return s.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').replace(/^\s+|\s+$/g, '') + '\n';
+  // `\b` is load-bearing: without it `<li` also matches the `<link>` tags in
+  // <head>, and everything up to the first </li> collapses into one bullet.
+  s = s.replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, (_, t) => '\n- ' + txt(t));
+  s = s.replace(/<\/?(p|div|br|section|article|header|main|table|tr|h[1-6])\b[^>]*>/gi, '\n');
+  s = decodeEntities(s.replace(/<[^>]+>/g, ' '));
+  // A line of nothing but spaces is a blank line: without trimming them the
+  // blank-line collapse never sees a run, and a page opens on 400 empty rows.
+  s = s.replace(/[ \t]+/g, ' ').replace(/^ | $/gm, '').replace(/\n{3,}/g, '\n\n').replace(/^\s+|\s+$/g, '');
+  s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => '```\n' + blocks[+i] + '\n```');
+  return s + '\n';
+}
+
+function decodeEntities(s) {
+  const named = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
+    if (e[0] !== '#') return named[e.toLowerCase()] ?? m;
+    const cp = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+    try { return String.fromCodePoint(cp); } catch { return m; }
+  });
 }
 
 /* Responsive pages ship the same content twice — one copy for wide screens,
@@ -511,6 +559,16 @@ function tryL1() {
   const timeout = withBudget(L1_TIMEOUT);
   const r = sh('curl', [
     '-sL', '--compressed', '-m', String(timeout), '-A', UA,
+    /* A browser UA gets a browser's handshake: Google's devsites bounce it to
+     * an auto-sign-in redirect that sets a cookie and expects it back. Without
+     * a cookie engine curl never returns it and loops until the timeout — the
+     * page, and its HTTP status, are lost, and a 404 escalates into Chrome.
+     * `-b ''` turns the engine on in memory for this one request. The redirect
+     * cap turns any other loop into an answer in a second, not in 15. */
+    '-b', '', '--max-redirs', '10',
+    // Read what the author wrote, not a machine translation picked for the
+    // locale this machine happens to be in.
+    '-H', 'Accept-Language: ' + ACCEPT_LANGUAGE,
     // content_type goes LAST: it is the only field that can contain a space
     // ("text/html; charset=utf-8"), so anything after it gets swallowed.
     '-w', '\n__SWR__%{http_code} %{url_effective} %{content_type}', url,
@@ -559,7 +617,23 @@ function parseNetworkEntries(out) {
   }
   return [];
 }
-const API_RE = /\/api\/|graphql|\bjson\b|\?format=json|\/v[0-9]\//i;
+/* `network --detail` wraps the response in opencli's own envelope (key, method,
+ * shape, …). The caller asked for the site's data, and the envelope always
+ * looks populated, so it can neither be shipped nor judged — unwrap it. */
+function unwrapDetail(out) {
+  const raw = String(out || '').trim();
+  let env = null;
+  try { env = JSON.parse(raw); } catch { /* not an envelope */ }
+  if (!env || Array.isArray(env) || typeof env !== 'object' || env.body === undefined) {
+    return { body: raw, status: null, truncated: false };
+  }
+  return {
+    body: typeof env.body === 'string' ? env.body : JSON.stringify(env.body, null, 2),
+    status: typeof env.status === 'number' ? env.status : null,
+    truncated: env.body_truncated === true,
+  };
+}
+const API_RE =/\/api\/|graphql|\bjson\b|\?format=json|\/v[0-9]\//i;
 function isFirstPartyNetwork(entry) {
   try {
     const normalize = (host) => host.replace(/^(www|api)\./i, '');
@@ -567,6 +641,36 @@ function isFirstPartyNetwork(entry) {
     const entryHost = normalize(new URL(String(entry.url || entry.href || '')).hostname);
     return entryHost === targetHost;
   } catch { return false; }
+}
+
+/* `extract` hands the page back in chunks and a cursor to the next one. Taking
+ * the first chunk and calling it the page is how a 71 KB doc arrived as 20 KB
+ * with exit 0 and nothing to say it was cut. Walk the cursor to the end; if
+ * the budget or the size ceiling stops the walk first, say so. */
+const EXTRACT_CHUNK = 200000;      // opencli's per-call ceiling: one call for almost any page
+const MAX_CONTENT = 2 * 1024 * 1024;
+function extractAll(sid) {
+  let md = '';
+  let title = '';
+  let start = 0;
+  for (;;) {
+    const re = shOpencli([
+      'browser', sid, 'extract', '--chunk-size', String(EXTRACT_CHUNK), '--start', String(start),
+    ], withBudget(EXTRACT_TIMEOUT));
+    if (re.code !== 0) return { md, title, truncated: start > 0 };
+    const out = re.out.trim();
+    let j;
+    try { j = JSON.parse(out); } catch { return { md: md + out, title, truncated: false }; } // older builds: raw markdown, no cursor
+    md += String(j.content || '');
+    if (!title) title = String(j.title || '');
+    const next = j.next_start_char;
+    if (typeof next !== 'number' || next <= start) return { md, title, truncated: false };
+    if (md.length >= MAX_CONTENT || remainingMs() < 1000) {
+      tlog(`extract stopped at ${next} of ${j.total_chars} chars (${md.length >= MAX_CONTENT ? 'size ceiling' : 'budget'})`);
+      return { md, title, truncated: true };
+    }
+    start = next;
+  }
 }
 
 /* ---------- L2 + L3 in one session: open → extract → [network] → close ---------- */
@@ -578,20 +682,10 @@ function tryL2L3(sid) {
     if (ro.code !== 0) throw new Error('open failed: ' + firstLine(ro.err || ro.out));
     openSession = sid;
 
-    const re = shOpencli(['browser', sid, 'extract', '--chunk-size', '20000'], withBudget(EXTRACT_TIMEOUT));
-    let md = '';
-    let title = '';
-    if (re.code === 0) {
-      const out = re.out.trim();
-      try {
-        const j = JSON.parse(out); // extract emits a JSON envelope: {url,title,content,...}
-        md = String(j.content || '');
-        title = String(j.title || '');
-      } catch { md = out; } // older builds: raw markdown
-    }
+    const { md, title, truncated } = extractAll(sid);
     if (md.length > 200 && !isFurniture(md)) {
       const body = (title ? `# ${title}\n\n` : '') + md;
-      return { kind: 'md', body };
+      return { kind: 'md', body, truncated };
     }
     tlog(`L2 extract ${isFurniture(md) ? 'is page furniture' : `thin (${md.length}b)`} → DOM landmark read`);
     const rd = shOpencli([
@@ -610,8 +704,14 @@ function tryL2L3(sid) {
     tlog(`L3: ${entries.length} entries captured, ${hits.length} first-party API-ish`);
     for (const h of hits.slice(0, 3)) {
       const key = String(h.key || h.id);
-      const rd = shOpencli(['browser', sid, 'network', '--detail', key, '--max-body', '20000'], withBudget(NETWORK_TIMEOUT));
-      if (rd.code === 0 && carriesData(rd.out)) { result = { kind: 'json', body: rd.out.trim() }; break; }
+      // No --max-body: a JSON document cut at N chars no longer parses.
+      const rd = shOpencli(['browser', sid, 'network', '--detail', key], withBudget(NETWORK_TIMEOUT));
+      if (rd.code !== 0) continue;
+      const d = unwrapDetail(rd.out);
+      // A failed API call is the site saying no, not the site's data.
+      if (d.status >= 400 || !carriesData(d.body)) continue;
+      result = { kind: 'json', body: d.body, truncated: d.truncated };
+      break;
     }
   } finally {
     closeSession(); // zero orphan tabs: normal path, exception, signal — all covered
@@ -620,17 +720,22 @@ function tryL2L3(sid) {
 }
 
 /* ---------- output ---------- */
-/* data:-URI images (inline base64) are pure token poison — strip them. */
+/* data:-URI images (inline base64) are pure token poison — strip them. An image
+ * with an empty alt is one its author marked decorative: nothing to read. */
 function stripJunk(md) {
-  return md.replace(/!\[[^\]]*\]\(data:[^)]+\)/g, '').replace(/\]\((data:[^)]+)\)/g, '](stripped-data-uri)');
+  return md.replace(/!\[[^\]]*\]\(data:[^)]+\)/g, '').replace(/\]\((data:[^)]+)\)/g, '](stripped-data-uri)')
+    .replace(/!\[\]\([^)]*\)/g, '');
 }
 /* `markup` = the body came from a rendered page, so a repeated block is a
- * second responsive copy and can go. Deduping is a token-economy step, run
- * after the content decision — never before it, or trimming a repetitive page
- * could flip it into looking like a wall. */
-function emit(source, body, markup, finalUrl) {
-  body = stripJunk(body);
+ * second responsive copy and can go, and so can image junk. Both are
+ * token-economy steps, run after the content decision — never before it, or
+ * trimming a repetitive page could flip it into looking like a wall. Neither
+ * touches a payload: an API's bytes are shipped as the server sent them.
+ * `truncated` = the page was longer than what we could read; say so where the
+ * caller will see it, not only in a log line it may have thrown away. */
+function emit(source, body, markup, finalUrl, truncated) {
   if (markup) {
+    body = stripJunk(body);
     const before = body.length;
     body = dropRepeatedBlock(body);
     if (body.length < before) {
@@ -638,12 +743,15 @@ function emit(source, body, markup, finalUrl) {
     }
   }
   tlog(`${source} ok → ${body.length}b to stdout`);
+  if (truncated) tlog(`WARNING: truncated — stdout holds only the first ${body.length}b of the page`);
   if (asJson) {
     /* `url` is what we were handed, which for a search-result link is a
      * redirector. The caller needs the page it actually landed on — to cite
      * it, and to build the next URL against the right host. */
     const landed = finalUrl && finalUrl !== url ? { final_url: finalUrl } : {};
-    console.log(JSON.stringify({ url, ...landed, ok: true, source, elapsed_ms: elapsedMs(), content: body }));
+    console.log(JSON.stringify({
+      url, ...landed, ok: true, source, truncated: !!truncated, elapsed_ms: elapsedMs(), content: body,
+    }));
   } else {
     console.log(body);
   }
@@ -729,4 +837,4 @@ const l2Reasons = notContent(result.body, null, result.body.length, result.kind 
 if (l2Reasons.length) {
   fail(1, l2Reasons[0], 'failed: escalation returned a wall, not content (' + l2Reasons.join(', ') + ')');
 }
-emit(result.kind === 'json' ? 'L3' : 'L2', result.body, result.kind !== 'json');
+emit(result.kind === 'json' ? 'L3' : 'L2', result.body, result.kind !== 'json', null, result.truncated);

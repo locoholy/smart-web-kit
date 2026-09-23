@@ -44,6 +44,19 @@ case "${3:-}" in
       printf '%s\\n' '{"title":"Listings","content":"- [Mobile apps](/mobileapps)\n- [Help and Feedback](/help)\n- [Advertising services](/ads)\n- [Business on the marketplace](/business)\n- [Company blog](/blog)\n- [Terms of use](/terms)\n- [Privacy policy](/privacy)\n- [Banner advertising](/banners)\n- [Safety rules](/safety)\n- [Sitemap](/sitemap)\n- [Regions map](/regions)\n- [Shops map](/shops)\n- [Popular queries](/popular)\n- [Careers](/careers)\n- [Google Play](/android)\n- [App Store](/ios)\n- [Marketplace BG](/bg)\n- [Marketplace PL](/pl)\n- [Marketplace RO](/ro)\n- [Marketplace UA](/ua)\n- [Cookie settings](/cookies)\n- [Report a listing](/report)\n- [Buyer protection](/protection)\n- [Delivery](/delivery)\n- [Payments](/payments)\n- [Contact support](/contact)\nFree app for your phone. This site uses cookies. You can change cookie settings in your browser."}'
       exit 0
     fi
+    if [ "${SWR_FAKE_CHUNKED:-}" = "1" ]; then
+      # A page longer than one chunk: the real extract hands back a cursor, and
+      # a reader that stops at the first chunk ships half a page as the page.
+      start=0; prev=""
+      for a in "$@"; do [ "$prev" = "--start" ] && start="$a"; prev="$a"; done
+      pad="This paragraph is real prose from a long documentation page, long enough to read as content. "
+      if [ "$start" = "0" ]; then
+        printf '{"title":"Long doc","total_chars":999,"next_start_char":500,"content":"## Part one\\n\\n%s%s%s"}\n' "$pad" "$pad" "$pad"
+      else
+        printf '{"title":"Long doc","total_chars":999,"next_start_char":null,"content":"\\n\\n## Limitations\\n\\n%s%s"}\n' "$pad" "$pad"
+      fi
+      exit 0
+    fi
     if [ "${SWR_FAKE_THIN_EXTRACT:-}" = "1" ] || [ "${SWR_FAKE_L3:-}" = "1" ]; then
       printf '%s\n' '{"title":"Fake browser","content":"thin"}'
       exit 0
@@ -63,13 +76,18 @@ case "${3:-}" in
   network)
     if [ "${SWR_FAKE_L3:-}" = "1" ]; then
       if [ "${4:-}" = "--detail" ]; then
+        # The real --detail wraps the response in opencli's envelope.
+        if [ "${5:-}" = "first-party-404" ]; then
+          printf '%s\n' '{"key":"first-party-404","url":"http://127.0.0.1/api/missing","method":"GET","status":404,"shape":{},"body":{"error":"not found","code":404,"detail":"no such page","trace":"abc"}}'
+          exit 0
+        fi
         if [ "${5:-}" = "first-party" ]; then
-          printf '%s\n' '{"plan":"SuperGrok","duration_days":7,"source":"first-party-api"}'
+          printf '%s\n' '{"key":"first-party","url":"http://127.0.0.1/api/catalog","method":"GET","status":200,"shape":{},"body":{"plan":"SuperGrok","duration_days":7,"source":"first-party-api"}}'
           exit 0
         fi
         exit 1
       fi
-      printf '%s\n' '[{"key":"third-party","url":"https://cdn.example.net/consent.json"},{"key":"first-party","url":"http://127.0.0.1/api/catalog"}]'
+      printf '%s\n' '[{"key":"third-party","url":"https://cdn.example.net/consent.json"},{"key":"first-party-404","url":"http://127.0.0.1/api/missing"},{"key":"first-party","url":"http://127.0.0.1/api/catalog"}]'
       exit 0
     fi
     ;;
