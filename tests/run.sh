@@ -239,6 +239,12 @@ r_browser_error "$BASE/gwall"
   [ "$R_CODE" = 1 ];                       check "live bridge + wall -> 1  " 1 "$(is && echo 1 || echo 0)"
 r_browser_nobridge "$BASE/gwall"
   [ "$R_CODE" = 4 ] && [ -z "$R_OUT" ];    check "bridge down -> exit 4    " 1 "$(is && echo 1 || echo 0)"
+# An unrepairable bridge must be reported within one cure's wait, not after a
+# minute of slow probes: the agent is blocked until we answer.
+rm -f "$TMP/opencli.log.healed"; T_START=$(date +%s)
+R_OUT=$(SWR_TOTAL_BUDGET=30 SWR_BRIDGE_REPAIR=no-launch SWR_FAKE_NO_EXT=1 SWR_OPENCLI_BIN="$FAKE_OPENCLI" SWR_OPENCLI_LOG="$TMP/opencli.log" "$SWR" "$BASE/gwall" 2>/dev/null); R_CODE=$?
+  [ "$R_CODE" = 4 ] && [ $(( $(date +%s) - T_START )) -le 20 ]
+  check "dead bridge answers <=20s" 1 "$(is && echo 1 || echo 0)"
 r_browser_heal "$BASE/gwall"
   [ "$R_CODE" = 0 ] && [ -n "$R_OUT" ];    check "bridge repaired -> read  " 1 "$(is && echo 1 || echo 0)"
   grep -F "daemon restart" "$TMP/opencli.log" >/dev/null; check "repair restarts daemon " 1 "$(is && echo 1 || echo 0)"

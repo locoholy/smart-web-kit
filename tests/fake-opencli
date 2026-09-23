@@ -17,8 +17,9 @@ if [ "${1:-}" = "daemon" ] && [ "${2:-}" = "restart" ]; then
   [ "${SWR_FAKE_HEAL:-}" = "1" ] && : > "$HEALED"
   exit 0
 fi
-if [ "${1:-}" = "doctor" ]; then
-  if down; then echo "Extension: not connected"; else echo "Extension: connected"; fi
+if [ "${1:-}" = "daemon" ] && [ "${2:-}" = "status" ]; then
+  echo "Daemon: running (PID 1)"
+  if down; then echo "Extension: disconnected"; else echo "Extension: connected (v1.0.0)"; fi
   exit 0
 fi
 if down; then
