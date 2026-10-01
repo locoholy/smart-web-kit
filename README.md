@@ -19,7 +19,7 @@ Agents burn ~80% of their time and context reading the web through raw `curl`
 
 ## Install (macOS / Linux)
 
-Prerequisites: `node >= 18`, Chrome.
+Prerequisites: `node >= 18` at runtime, Chrome.
 
 - **L1 works out of the box** — plain HTTP fetch, no extras needed.
 - **Full ladder (L2/L3)** needs [OpenCLI](https://opencli.com):
@@ -33,17 +33,21 @@ Prerequisites: `node >= 18`, Chrome.
   disable, `no-launch` to allow everything but starting Chrome).
 
 ```bash
-git clone https://github.com/<you>/smart-web-kit.git && cd smart-web-kit
-npm install -g .          # provides the `swr` binary (L1 works immediately)
-# or: ./install.sh        # symlinks the binary into ~/.local/bin, then runs `swr init`
+git clone https://github.com/locoholy/smart-web-kit.git && cd smart-web-kit
+./install.sh              # builds a standalone binary into ~/.local/bin, then runs `swr init`
+./install.sh --link       # development: symlink tools/swr from this checkout instead
 ```
 
-Then sync the skill registry once:
+`install.sh` compiles `tools/swr` plus the skill text into one executable
+(`bun` is a build-time dependency only: `brew install oven-sh/bun/bun`). The
+installed `swr` is a real binary, not a link into the clone, and it carries the
+skill inside it — so it keeps working after you move or delete the checkout, and
+`swr init` needs no repository on the machine.
 
 ```bash
 swr init                 # SKILL.md → ~/.agents/skills + every agent root you already have
 swr doctor               # "ready" / "not-ready" + exactly what to install (incl. the Chrome extension) for escalation
-swr doctor --skills      # verifies EVERY installed copy matches this release
+swr doctor --skills      # per-root status: synced, stale, modified, or missing
 ```
 
 `init` writes to `~/.agents/skills` and to any of `~/.claude`, `~/.codex`,
@@ -55,6 +59,20 @@ root quietly serving an old skill; `doctor --skills` checks all of them.
 That's it: one install, one command (`swr <url>`), one honest result — any
 agent that supports Agent Skills can use the tool. No project-local copies or
 per-agent adapters.
+
+### The version stamp
+
+`init` writes one extra line into the frontmatter of every copy it deploys:
+
+```yaml
+version: 1.7.1+swr
+```
+
+The number comes from `package.json` at build time, so a release cannot deploy
+a stamp it does not own. That line is what lets `doctor --skills` tell a copy
+from an older release (`STALE`) apart from a copy someone edited by hand
+(`MODIFIED`) apart from a copy predating stamping (`UNSTAMPED`), instead of
+just reporting "differs".
 
 ## The `swr` escalation ladder
 
@@ -126,7 +144,8 @@ Configuration via env: `SWR_TOTAL_BUDGET` (seconds, default 45),
 ## Tests
 
 ```bash
-./tests/run.sh     # local server + fake OpenCLI; no network/Chrome/focus change
+./tests/run.sh                              # local server + fake OpenCLI; no network/Chrome/focus change
+SWR="$HOME/.local/bin/swr" ./tests/run.sh   # the same suite against the installed binary
 ```
 
 ## Skills

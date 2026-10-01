@@ -8,7 +8,11 @@
 # Usage: ./tests/run.sh   (needs node >= 18; no opencli required)
 set -uo pipefail
 
-SWR="${SWR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/swr}"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The checkout's own skill text. Anchored to this script, not to $SWR: the suite
+# also runs against an installed binary whose neighbours are not a repo.
+SRC="$REPO/skills/smart-web-read/SKILL.md"
+SWR="${SWR:-$REPO/tools/swr}"
 FAKE_OPENCLI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fake-opencli"
 PORT="${SWR_TEST_PORT:-38231}"
 TMP="$(mktemp -d)"
@@ -137,6 +141,8 @@ check(){ # name expected actual  -> prints PASS/FAIL
   if [ "$got" = "$want" ]; then echo "PASS  $name (got $got)"; pass=$((pass+1));
   else echo "FAIL  $name (got $got, want $want)"; fail=$((fail+1)); fi
 }
+
+strip_stamp(){ grep -v '^version: ' "$1"; }   # `init` injects this line; compare the rest
 
 BASE="http://127.0.0.1:$PORT"
 
@@ -275,10 +281,33 @@ mkdir -p "$TMP/home" "$TMP/proj" && ( cd "$TMP/proj" && HOME="$TMP/home" "$SWR" 
   mkdir -p "$TMP/home/.agents/skills/swr-search" && echo stale > "$TMP/home/.agents/skills/swr-search/SKILL.md"
   ( cd "$TMP/proj" && HOME="$TMP/home" "$SWR" init ) >/dev/null 2>&1
   [ ! -e "$TMP/home/.agents/skills/swr-search" ];              check "init retires old skills " 1 "$(is && echo 1 || echo 0)"
-  cmp -s "$(dirname "$SWR")/../skills/smart-web-read/SKILL.md" "$TMP/home/.agents/skills/smart-web-read/SKILL.md"; check "read source synced      " 1 "$(is && echo 1 || echo 0)"
+  # The deployed copy is the source text plus one injected `version:` line, so
+  # the two are compared with that line removed from both sides.
+  diff -q <(strip_stamp "$SRC") \
+          <(strip_stamp "$TMP/home/.agents/skills/smart-web-read/SKILL.md") >/dev/null
+  check "read source synced      " 1 "$(is && echo 1 || echo 0)"
+  grep -q "^version: " "$TMP/home/.agents/skills/smart-web-read/SKILL.md"; check "init stamps the version " 1 "$(is && echo 1 || echo 0)"
   [ "$(HOME="$TMP/home" "$SWR" doctor --skills 2>/dev/null; echo $?)" = "skills-ready
 0" ]; check "doctor skills synced    " 1 "$(is && echo 1 || echo 0)"
   [ ! -d "$TMP/proj/.agents" ] && [ ! -d "$TMP/proj/.claude" ]; check "no project skill dirs   " 1 "$(is && echo 1 || echo 0)"
+
+  SKILL_DST="$TMP/home/.agents/skills/smart-web-read/SKILL.md"
+  # A release stamp from another version is the answer doctor must give for a
+  # copy left over from an older swr, and it outranks the text comparison.
+  sed -i '' 's/^version: .*/version: 0.0.1+swr/' "$SKILL_DST" 2>/dev/null || sed -i 's/^version: .*/version: 0.0.1+swr/' "$SKILL_DST"
+  D_OUT="$(HOME="$TMP/home" "$SWR" doctor --skills 2>&1 >/dev/null)"; D_CODE=$?
+  [ "$D_CODE" = 1 ] && [[ "$D_OUT" == *STALE* ]];     check "doctor: stale stamp     " 1 "$(is && echo 1 || echo 0)"
+  # Same version, different text: a hand edit, and doctor must name it that.
+  sed -i '' 's/^version: .*/version: 1.7.1+swr/' "$SKILL_DST" 2>/dev/null || sed -i 's/^version: .*/version: 1.7.1+swr/' "$SKILL_DST"
+  echo "hand edit" >> "$SKILL_DST"
+  D_OUT="$(HOME="$TMP/home" "$SWR" doctor --skills 2>&1 >/dev/null)"; D_CODE=$?
+  [ "$D_CODE" = 1 ] && [[ "$D_OUT" == *MODIFIED* ]];  check "doctor: hand edit       " 1 "$(is && echo 1 || echo 0)"
+  # Text that matches with no stamp at all predates stamping; doctor still
+  # reports it rather than calling it modified. Take the text from the source,
+  # so no leftover edit from the case above is in play.
+  strip_stamp "$SRC" > "$SKILL_DST"
+  D_OUT="$(HOME="$TMP/home" "$SWR" doctor --skills 2>&1 >/dev/null)"; D_CODE=$?
+  [ "$D_CODE" = 0 ] && [[ "$D_OUT" == *UNSTAMPED* ]]; check "doctor: unstamped copy  " 1 "$(is && echo 1 || echo 0)"
 
 echo "---"
 echo "pass=$pass fail=$fail"

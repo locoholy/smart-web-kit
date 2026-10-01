@@ -40,8 +40,8 @@ say which tier answered and why a read failed. If `--json` says
 `truncated: true`, you have the start of the page, not all of it. `swr --help`
 lists the env knobs. `swr doctor` says whether Chrome escalation is available.
 If `swr` is missing: ask the user to install smart-web-kit
-(`git clone <repo> && cd smart-web-kit && npm install -g .`), then run
-`swr init` to reproduce this skill. Do NOT fall back to raw `curl`.
+(`git clone https://github.com/locoholy/smart-web-kit && cd smart-web-kit && ./install.sh`),
+then run `swr init` to reproduce this skill. Do NOT fall back to raw `curl`.
 
 ## Where this tool ends
 
